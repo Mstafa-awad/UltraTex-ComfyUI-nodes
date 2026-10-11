@@ -3,7 +3,7 @@ from __future__ import annotations
 import numpy as np
 
 from .contracts import AtlasContext, AtlasTile, MapInfo
-from .geometry import FOCAL, validate_uv
+from .geometry import FOCAL
 from .render import Renderer
 from .runtime import Store, fingerprint, interrupt, measure, ram_preflight
 
@@ -36,11 +36,11 @@ def prepare_atlas(context, gbuffer, size, policy):
         raise ValueError("Atlas size must be between 64 and 8192")
     if len(context.faces) >= 2**24:
         raise ValueError("Atlas rasterizer supports fewer than 16,777,216 faces")
-    bad_uv_triangles = validate_uv(context)
+    # UV overlap/degeneracy validation intentionally disabled by request.
     ram_preflight(size*size*8 + len(context.faces)*32, policy.system_headroom_mb)
     store = Store(policy)
-    # Different safety policy and report semantics: don't reuse old raster caches.
-    prefix = fingerprint("atlas-raster-v4-normals", context.atlas_id, context.normals, size, policy.atlas_tile)
+    # New cache namespace: this version rasterizes without an overlap-counting pass.
+    prefix = fingerprint("atlas-raster-v5-no-uv-validation", context.atlas_id, context.normals, size, policy.atlas_tile)
     chart_ref = store.lookup(prefix + "charts")
     cover_ref = store.lookup(prefix + "cover")
     tiles = []
@@ -52,16 +52,12 @@ def prepare_atlas(context, gbuffer, size, policy):
         return AtlasContext(context.atlas_id, context.geometry_id, size,
                             tuple(AtlasTile(x,y,*refs) for x,y,refs in tiles), chart_ref, cover_ref, gbuffer), {
                                 "stage":"prepare_atlas", "cache_hit":True, "atlas_size":size,
-                                "degenerate_uv_triangles":bad_uv_triangles,
-                                "overlap_note":"Previously verified against per-tile and global thresholds"}
+                                "uv_validation":"disabled by user request"}
     with measure("prepare_atlas", atlas_size=size) as report:
         per_face = chart_labels(context)
-        total_overlaps = 0
-        # Allow isolated rasterized edge collisions, never widespread stacking.
-        # Both per-tile and whole-atlas budgets are enforced, preventing thousands
-        # of 'small' conflicts from slipping through across many tiles.
-        overlap_tile_limit = 16
-        overlap_total_limit = max(16, min(128, int(size * size * 0.00001)))
+        # Do not reject UV island overlaps, stacked faces, or collapsed UV triangles.
+        # Draw once per tile; the renderer will select whichever overlapping face
+        # is visible in the UV rasterization at each texel.
         charts = np.zeros((size,size), np.int32)
         complete = []
         with Renderer(context) as renderer:
@@ -69,13 +65,6 @@ def prepare_atlas(context, gbuffer, size, policy):
                 interrupt()
                 w,h = min(policy.atlas_tile, size-x), min(policy.atlas_tile,size-y)
                 region = (x/size, 1-(y+h)/size, w/size, h/size)
-                counts = renderer.draw(w,h,np.eye(4),region,count_only=True)
-                overlaps = int(np.count_nonzero(counts > 1.5))
-                total_overlaps += overlaps
-                if overlaps > overlap_tile_limit or total_overlaps > overlap_total_limit:
-                    raise ValueError(f"Overlapping UVs: tile ({x},{y}) has {overlaps} conflicting texels "
-                                     f"(limit {overlap_tile_limit}); whole atlas has {total_overlaps} "
-                                     f"(limit {overlap_total_limit}). Repair stacked/mirrored UV islands.")
                 nd,pf = renderer.draw(w,h,np.eye(4),region)
                 face_ids = pf[...,3].astype(np.int32)-1
                 valid = face_ids >= 0
@@ -86,10 +75,7 @@ def prepare_atlas(context, gbuffer, size, policy):
                 complete.append(AtlasTile(x,y,*refs))
         chart_ref,cover_ref = store.put(charts,prefix+"charts"),store.put(charts>0,prefix+"cover")
         report.update(cache_hit=False, uv_coverage=float((charts>0).mean()), tiles=len(complete),
-                      degenerate_uv_triangles=bad_uv_triangles,
-                      overlap_texels=total_overlaps, overlap_tile_limit=overlap_tile_limit,
-                      overlap_atlas_limit=overlap_total_limit,
-                      overlap_validation="at output texel centres; subpixel overlaps are not certified")
+                      uv_validation="disabled by user request")
     return AtlasContext(context.atlas_id, context.geometry_id, size,tuple(complete),chart_ref,cover_ref,gbuffer),report
 
 

@@ -128,7 +128,7 @@ class CoreTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,"degenerate UVs"):
             validate_uv(replace(base,faces=np.concatenate((good,too_many))))
 
-    def test_atlas_tolerates_only_tiny_uv_collisions(self):
+    def test_atlas_does_not_reject_uv_collisions(self):
         from ..core import bake
         from ..core.contracts import GBuffer
         context,_=prepare_geometry(Mesh())
@@ -153,7 +153,7 @@ class CoreTests(unittest.TestCase):
         with patch.object(bake,"Renderer",FakeRenderer):
             with self.assertNoLogs("UltraTex",level="WARNING"):
                 atlas,report=bake.prepare_atlas(context,gbuffer,64,self.policy)
-            self.assertEqual(report["overlap_texels"],5)
+            self.assertEqual(report["uv_validation"],"disabled by user request")
             self.assertEqual(atlas.size,64)
             # Reusing the same UVs after repairing normals must not reuse the old
             # atlas-normal cache. The old cache key omitted normals entirely.
@@ -165,8 +165,9 @@ class CoreTests(unittest.TestCase):
         other=replace(self.policy,spill_directory=str(Path(self.tmp.name)/"newatlas"))
         FakeRenderer.overlaps=22
         with patch.object(bake,"Renderer",FakeRenderer):
-            with self.assertRaisesRegex(ValueError,"Overlapping UVs"):
-                bake.prepare_atlas(context,gbuffer,64,other)
+            atlas2,report2=bake.prepare_atlas(context,gbuffer,64,other)
+            self.assertEqual(atlas2.size,64)
+            self.assertEqual(report2["uv_validation"],"disabled by user request")
 
     def test_missing_chunk_compatibility_fails_instead_of_silent_fallback(self):
         from ..vendor.optim import chunked_model
