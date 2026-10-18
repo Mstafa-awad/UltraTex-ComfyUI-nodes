@@ -1,0 +1,100 @@
+{
+  "package": "UltraTex Modular",
+  "version": "2.0.0",
+  "measured_on": "2026-10-10",
+  "python": "3.12.10",
+  "dependencies": {
+    "torch": "2.8.0+cu128",
+    "numpy": "1.26.4",
+    "Pillow": "12.2.0",
+    "scipy": "1.17.1",
+    "einops": "0.8.2",
+    "moderngl": "5.12.0",
+    "glcontext": "3.0.0",
+    "psutil": "7.2.2",
+    "triton-windows": "3.8.0.post28",
+    "gguf": "0.19.0"
+  },
+  "comfyui_revision": "3c1b7a17fdf239d35ce98cc777756f572d089795",
+  "gguf_revision": "6ea2651e7df66d7585f6ffee804b20e92fb38b8a",
+  "vendored_wrapper_revision": "8137da52ed8352305cb7825b39c36a250bf2507a",
+  "models": [
+    {
+      "path_under_models": "diffusion_models/flux-2-klein-base-9b-Q4_0.gguf",
+      "component": "FLUX.2 Klein base 9B GGUF Q4_0",
+      "upstream_reference": "https://huggingface.co/black-forest-labs/FLUX.2-klein-base-9B",
+      "terms": "BFL FLUX non-commercial model license; quantizer provenance not established from local filename",
+      "redistributed": false,
+      "source_verification": "reference family only; no claim of authenticated local download provenance",
+      "size_bytes": 5616228640,
+      "sha256": "02d4c2b55b5a6d4aca65eafd0f0eabe8c1e3837391042b6879be04eb99c7e116"
+    },
+    {
+      "path_under_models": "loras/ultratex_flux2.safetensors",
+      "component": "UltraTex FLUX.2 albedo PEFT adapter",
+      "upstream_reference": "https://www.modelscope.ai/models/Yibo-Zhang/UltraTex",
+      "terms": "UltraTex code is MIT; independent artifact-specific grant not established, base-model obligations remain",
+      "redistributed": false,
+      "source_verification": "SHA-256 matches publisher ModelScope repository metadata, checked 2026-10-10",
+      "size_bytes": 478172752,
+      "sha256": "3b1915177a81bc2ab43f501355bf39113df0128e6cbc6fedf8b8621d5e06a01c",
+      "verified_task": "albedo",
+      "published_path": "flux2/lora/dit_lora.safetensors",
+      "published_revision": "526614b481738d367f91889e531b6e30545fdf59",
+      "filename_status": "Names corrected by user and reverified after initial swapped-name diagnostics"
+    },
+    {
+      "path_under_models": "loras/ultratex_flux2_mr.safetensors",
+      "component": "UltraTex FLUX.2 mr PEFT adapter",
+      "upstream_reference": "https://www.modelscope.ai/models/Yibo-Zhang/UltraTex",
+      "terms": "UltraTex code is MIT; independent artifact-specific grant not established, base-model obligations remain",
+      "redistributed": false,
+      "source_verification": "SHA-256 matches publisher ModelScope repository metadata, checked 2026-10-10",
+      "size_bytes": 478172752,
+      "sha256": "13e94f5a30a789b1e3e76d8c96cbba5f52fb2f68411e56377f382e145da23fc1",
+      "verified_task": "mr",
+      "published_path": "flux2_mr/lora/dit_lora.safetensors",
+      "published_revision": "a9c9bbdd0c299f4015198672c87c6ea870e8b213",
+      "filename_status": "Names corrected by user and reverified after initial swapped-name diagnostics"
+    },
+    {
+      "path_under_models": "ultratex/ultratex_flux2_decoder.pt",
+      "component": "UltraTex FLUX.2 foreground decoder",
+      "upstream_reference": "https://www.modelscope.ai/models/Yibo-Zhang/UltraTex",
+      "terms": "Independent artifact-specific grant not established from local file",
+      "redistributed": false,
+      "source_verification": "reference family only; no claim of authenticated local download provenance",
+      "size_bytes": 99261764,
+      "sha256": "981dc4c52481687c6da4e6211617615a2b2bcc33456e1953ee6c5478aa00025b"
+    },
+    {
+      "path_under_models": "vae/flux2-vae.safetensors",
+      "component": "FLUX.2 VAE",
+      "upstream_reference": "https://huggingface.co/black-forest-labs/FLUX.2-klein-base-9B",
+      "terms": "Check the license attached to the exact VAE distribution; local source provenance unavailable",
+      "redistributed": false,
+      "source_verification": "reference family only; no claim of authenticated local download provenance",
+      "size_bytes": 336213556,
+      "sha256": "d64f3a68e1cc4f9f4e29b6e0da38a0204fe9a49f2d4053f0ec1fa1ca02f9c4b5"
+    },
+    {
+      "path_under_models": "text_encoders/Qwen3-8B-Q6_K.gguf",
+      "component": "Qwen3-8B GGUF text encoder for flux2",
+      "upstream_reference": "https://huggingface.co/Qwen/Qwen3-8B",
+      "terms": "Qwen3-8B upstream Apache-2.0; quantized artifact provider not established from local filename",
+      "redistributed": false,
+      "source_verification": "reference family only; no claim of authenticated local download provenance",
+      "size_bytes": 6725899040,
+      "sha256": "cb042ccd76795a8830d6be6bd4165245847cc68e41797b13bd61aed4c2cfbce6"
+    }
+  ],
+  "license_reference": "https://huggingface.co/black-forest-labs/FLUX.2-klein-base-9B/blob/main/LICENSE.md",
+  "model_use_and_outputs": "Model-use and output-use permissions are separate; consult the referenced current license. The node pack adds no output ownership or watermark terms.",
+  "runtime_note": "Installed Triton 3.8.0.post28 passed this machine's sparse tests with torch 2.8.0+cu128. This differs from the upstream supported minor-version matrix; it is not a universal compatibility claim.",
+  "comfyui_version": "0.39.2",
+  "note": "Hardware and benchmark manifest refers to historical v0.1.2 measurements; v0.3.0 GPU results are unverified.",
+  "build_date": "2026-10-16",
+  "status": "v2 package; full-context VAE experimental/off by default; real 6GB untested",
+  "inventory_note": "Model provenance and dependency inventory inherited from handoff; not new multi-GPU certification.",
+  "project_code_license": "GPL-3.0-only; vendored MIT/Apache license grants retained as separate notices"
+}
