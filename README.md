@@ -6,12 +6,14 @@
 
 **High-detail multi-view texturing · Native MESH workflow · GPU-aware execution · Fast UV baking**
 
-[![Version](https://img.shields.io/badge/version-2.0.0-2563eb?style=for-the-badge)](#whats-new-in-v2)
+[![Version](https://img.shields.io/badge/version-2.2.0rc2-2563eb?style=for-the-badge)](SHARP_SOURCE.md)
 [![License](https://img.shields.io/badge/code-GPL--3.0-blue?style=for-the-badge)](#license-and-contributing)
 [![ComfyUI](https://img.shields.io/badge/platform-ComfyUI-111827?style=for-the-badge)](#installation)
 [![Runs locally](https://img.shields.io/badge/inference-local-16a34a?style=for-the-badge)](#requirements)
 
 **Free source code. No hosted service, subscription, or bundled model weights.**
+
+**New optional bake TEST:** [sharp_source, native RealESR pixels and true 8K atlas](SHARP_SOURCE.md). Existing bake modes and generation settings remain available.
 
 Created and maintained as a community project by [MostAadTech](https://github.com/Mstafa-awad).
 
@@ -203,6 +205,36 @@ First use `-DryRun` to inspect the command. The tested 8GB full-context configur
 
 ---
 
+
+## UTX 4 — Temporary Cache Cleaner (v2.0.1)
+
+`UTX 4. Cache Cleaner` is a non-destructive size scanner by default, with a **Scan Size** button, a confirmation-protected **Delete Now** button, and an optional workflow cleanup mode. No CUDA/model loading is needed.
+
+It checks **only direct children** of ComfyUI's configured output directory:
+
+```text
+ComfyUI/output/
+├── .ultratex_cache/             ← temporary: can delete
+├── ultratex_views_22ee24b2d155/ ← temporary: can delete
+├── ultratex_views_5919409c7e59/ ← temporary: can delete
+├── ultratex_views_<other-ID>/   ← temporary: can delete
+├── ultratex/                   ← PROTECTED: saved GLBs, textures
+├── 3d/                         ← PROTECTED
+└── anything_else/              ← PROTECTED
+```
+
+The Scan Size button reports each eligible directory's logical file size and its total in MiB/GiB; it does not delete anything. On pressing **Delete Now**, a confirmation dialog shows the exact directory-name rule before it deletes. Unsafe symlink/junction directories and unreadable trees are refused. Files locked by Windows/OneDrive may prevent removal; the resulting status reports failures. Actual freed disk space can differ from logical file sizes.
+
+**Using it in a graph:**
+
+- For **start-of-workflow scanning**, add `UTX 4. Cache Cleaner` unconnected (it's an output node) or connect its pass-through input/output to any compatible value. Default mode `scan_only` leaves everything unchanged.
+- For **automatic end-of-workflow cleanup**, place it *after the last node that needs the temporary files*, set `mode = delete_when_executed` and `confirm_delete_on_run = true`. The `passthrough` input is optional; when connected, the node returns the original input unchanged.
+- Manual **Scan Size** / **Delete Now** buttons work in the ComfyUI node editor without running a queued workflow, after restarting ComfyUI and refreshing the browser.
+
+**WARNING:** these folders contain *live intermediate views and cache data*. Deleting them during an UltraTex job can break sampling/baking or downstream Save Views nodes, even if the final GLB directory is protected. Do not click Delete Now while a job is using these intermediates. Automatic cleanup should be the **final execution step**, *after* saving all desired view bundles, textures and GLBs. Turning on automatic cleanup before an active generation will remove files it needs. The cleanup is permanent; the tool does not move them to the Recycle Bin.
+
+The cleaner doesn't delete the `ultratex` directory, unrelated output folders, saved GLBs, or top-level files. Its output includes a cache-size summary and a text report; data pass-through remains unchanged.
+
 ## License and contributing
 
 **UltraTex Modular v2 project-authored source is distributed under GNU GPL version 3.0.** See [LICENSE](LICENSE). Vendored MIT/Apache-2.0 code keeps all original notices; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), [vendor/UPSTREAM_LICENSE](vendor/UPSTREAM_LICENSE) and [SLA Apache-2.0 license](vendor/sparse_attention/LICENSE.txt).
@@ -246,3 +278,8 @@ Bug fixes, performance improvements, new hardware validation, bake-quality tests
 [UltraTex research](https://github.com/yiboz2001/UltraTex) · [ComfyUI](https://github.com/comfyanonymous/ComfyUI) · [ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF)
 
 </div>
+
+
+## Optional UTX2.5 view enhancement (2.2.0rc1 TEST)
+
+See [VIEW_ENHANCER.md](VIEW_ENHANCER.md) for wiring, measured limitations and rollback. Enhancement is disabled by default. Native cameras/generation/MR/UTX4 remain supported.

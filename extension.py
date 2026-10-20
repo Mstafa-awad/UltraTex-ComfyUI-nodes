@@ -472,7 +472,8 @@ NODES=[ProbeGGUFLoRAMemory,ConfigureRuntime,InspectMesh,FileToMesh,PrepareGeomet
 
 from .simple import SIMPLE_NODES
 from .fast_baker import FAST_BAKER_NODES
-NODES=SIMPLE_NODES+FAST_BAKER_NODES+NODES
+from .view_enhancer import IntelligentViewEnhancer
+NODES=SIMPLE_NODES+[IntelligentViewEnhancer]+FAST_BAKER_NODES+NODES
 
 # v2: additive standalone mesh loader; all original node and execution logic unchanged.
 from .mesh_loader_v2 import LoadMeshV2
@@ -482,3 +483,8 @@ NODES = [LoadMeshV2] + NODES
 class UltraTexExtension(ComfyExtension):
     async def get_node_list(self):
         return NODES
+
+
+# UTX 4: standalone, name-scoped temporary cache cleaner and ANY pass-through.
+from .utx_cache_cleaner import UTXCacheCleaner
+NODES.append(UTXCacheCleaner)

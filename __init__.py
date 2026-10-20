@@ -1,10 +1,16 @@
 """UltraTex Modular. Importing the package never loads models or GPU backends."""
 
-__version__ = "2.0.0"
+__version__ = "2.2.0rc2"
 
 
 async def comfy_entrypoint():
     from .startup import apply_native_cap
     apply_native_cap()
+    from .utx_cache_cleaner import register_routes
+    register_routes()
     from .extension import UltraTexExtension
     return UltraTexExtension()
+
+
+# JavaScript adds the Scan Size / Delete Now buttons to UTX 4.
+WEB_DIRECTORY = "./web"

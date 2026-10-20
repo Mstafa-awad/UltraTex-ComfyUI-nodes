@@ -165,6 +165,51 @@ class Samples:
 
 
 @dataclass(frozen=True)
+class ImageTransform:
+    """Pixel-edge affine map; integer pixel indices refer to their centres (+0.5).
+
+    Camera/depth remain in original coordinates. The enhanced canvas is square;
+    rectangular crops are aspect-preserved with explicit letterbox padding.
+    """
+    original_width: int
+    original_height: int
+    left: int
+    top: int
+    width: int
+    height: int
+    output_size: int
+    resized_width: int
+    resized_height: int
+    pad_left: int = 0
+    pad_top: int = 0
+
+    def __post_init__(self):
+        vals = (self.original_width, self.original_height, self.width, self.height,
+                self.output_size, self.resized_width, self.resized_height)
+        if any(not isinstance(v, int) or v <= 0 for v in vals):
+            raise ValueError("Invalid positive image transform dimensions")
+        if min(self.left, self.top, self.pad_left, self.pad_top) < 0:
+            raise ValueError("Negative crop/padding")
+        if self.left+self.width > self.original_width or self.top+self.height > self.original_height:
+            raise ValueError("Crop exceeds original image")
+        if self.pad_left+self.resized_width > self.output_size or self.pad_top+self.resized_height > self.output_size:
+            raise ValueError("Resized crop exceeds enhanced canvas")
+
+    def uv(self, u, v):
+        return (((u*self.original_width-self.left)*self.resized_width/self.width+self.pad_left)/self.output_size,
+                ((v*self.original_height-self.top)*self.resized_height/self.height+self.pad_top)/self.output_size)
+
+    def pixels(self, x, y):
+        """Original pixel-centre index -> enhanced pixel-centre index."""
+        u, v = self.uv((x+.5)/self.original_width, (y+.5)/self.original_height)
+        return u*self.output_size-.5, v*self.output_size-.5
+
+    def inverse_pixels(self, x, y):
+        return (((x+.5-self.pad_left)*self.width/self.resized_width+self.left-.5),
+                ((y+.5-self.pad_top)*self.height/self.resized_height+self.top-.5))
+
+
+@dataclass(frozen=True)
 class ViewSet:
     plan: ViewPlan
     images: tuple[ArrayRef, ...]
@@ -172,6 +217,9 @@ class ViewSet:
     task: str
     job_id: str
     gbuffer: GBuffer
+    sampling: tuple[ImageTransform, ...] = ()
+    original_images: tuple[ArrayRef, ...] = ()
+    original_masks: tuple[ArrayRef, ...] = ()
 
 
 @dataclass(frozen=True)

@@ -1,4 +1,4 @@
-"""Single production baking node with two direct-resolution modes."""
+"""Production baking node with retained modes and optional source-preserving fusion."""
 from __future__ import annotations
 
 import json
@@ -17,9 +17,8 @@ def _image(array):
     return torch.from_numpy(np.array(array, np.float32)[None])
 
 
-# Only two direct baking algorithms remain. Both bake at the requested resolution.
-# Their implementation in core/fastbake.py is intentionally unchanged.
-UPSCALE_MODES = ("fast_detail", "off_direct")
+# Retained modes preserve their calculations; sharp_source is a separate branch.
+UPSCALE_MODES = ("fast_detail", "off_direct", "detail_consistent", "sharp_source")
 
 
 def run_fast_bake(albedo_setup, albedo_views, texture_size=2048, completion="surface_fill",
@@ -36,16 +35,19 @@ def run_fast_bake(albedo_setup, albedo_views, texture_size=2048, completion="sur
         validate_bake_branch(mr_setup, mr_views, "mr")
         validate_shared_bake_geometry(albedo_setup, mr_setup)
     target = int(texture_size)
-    if target not in (1024, 2048, 4096):
-        raise ValueError("texture_size must be 1024, 2048 or 4096")
+    if target not in (1024, 2048, 4096, 8192):
+        raise ValueError("texture_size must be 1024, 2048, 4096 or 8192")
     if upscale_mode not in UPSCALE_MODES:
-        raise ValueError(f"Unknown upscale_mode {upscale_mode!r}; choose fast_detail or off_direct")
+        raise ValueError(f"Unknown upscale_mode {upscale_mode!r}; choose one of {UPSCALE_MODES}")
+    if target==8192 and upscale_mode!='sharp_source':
+        raise ValueError("8192 atlas requires sharp_source's bounded-memory preparation. Use 4096 with the retained modes.")
     if completion not in ("surface_fill", "off"):
         raise ValueError("completion must be surface_fill or off")
 
     maps, coverage, report = bake_surface_maps(
         albedo_setup, albedo_views, target, completion == "surface_fill",
-        mr_setup, mr_views, device_preference=device, detail=(upscale_mode == "fast_detail"))
+        mr_setup, mr_views, device_preference=device, detail=(upscale_mode in ("fast_detail", "detail_consistent")),
+        consistent=(upscale_mode == "detail_consistent"),source_sharp=(upscale_mode == "sharp_source"))
 
     report["upscale_mode"] = upscale_mode
     report["output_size"] = target
@@ -57,7 +59,8 @@ def run_fast_bake(albedo_setup, albedo_views, texture_size=2048, completion="sur
     t0 = time.perf_counter()
     infos = {name: MapInfo(context.atlas_id, name, target, target, provenance="utx-fast-surface-bake")
              for name in maps}
-    tensors = {name: _image(value) for name, value in maps.items()}
+    tensors = {name: (torch.from_numpy(np.asarray(value,np.float32)[None]) if upscale_mode=='sharp_source' else _image(value))
+               for name, value in maps.items()}
     mesh, _ = apply_materials(context.mesh, uv_convention=getattr(context, "uv_convention", "v_down"),
                               map_infos=infos, **tensors)
     glb = create_file(mesh)
@@ -69,8 +72,14 @@ def run_fast_bake(albedo_setup, albedo_views, texture_size=2048, completion="sur
         m = material.get("metallic_factor", 0.0)
         r = 0.7 if r is None or r < 0 else float(r)
         m = 0.0 if m is None or m < 0 else float(m)
-        roughness = torch.full_like(tensors["base_color"], r)
-        metallic = torch.full_like(tensors["base_color"], m)
+        if upscale_mode=='sharp_source':
+            # Keep the exact IMAGE shape/values without allocating two extra
+            # 768MiB constant maps for an albedo-only 8K result.
+            roughness=torch.full((1,1,1,3),r).expand_as(tensors['base_color'])
+            metallic=torch.full((1,1,1,3),m).expand_as(tensors['base_color'])
+        else:
+            roughness = torch.full_like(tensors["base_color"], r)
+            metallic = torch.full_like(tensors["base_color"], m)
     report["material_export_seconds"] = round(time.perf_counter() - t0, 3)
     report["node_total_seconds"] = round(time.perf_counter() - start, 3)
     base = report.get("base_color", {})
@@ -84,7 +93,7 @@ def run_fast_bake(albedo_setup, albedo_views, texture_size=2048, completion="sur
     log.info(summary)
     report_text = json.dumps(report, indent=2, default=str)
     return (mesh, glb, tensors["base_color"], roughness, metallic,
-            torch.from_numpy(np.array(coverage, np.float32)[None]), report_text)
+            torch.from_numpy((np.asarray(coverage,np.float32) if upscale_mode=='sharp_source' else np.array(coverage,np.float32))[None]), report_text)
 
 
 class FastSurfaceTextureBaker(io.ComfyNode):
@@ -94,7 +103,9 @@ class FastSurfaceTextureBaker(io.ComfyNode):
             "UTXFastSurfaceTextureBaker", "3. Fast Surface Texture Baker",
             [
                 SETUP.Input("albedo_setup"), VIEWS.Input("albedo_views"),
-                io.Combo.Input("texture_size", options=[1024, 2048, 4096], default=2048),
+                io.Combo.Input("texture_size", options=[1024, 2048, 4096, 8192], default=2048,
+                               tooltip="Final exported atlas size. UTX2.5 target changes source views only. "
+                                       "8192 requires sharp_source and takes more bake time and RAM."),
                 io.Combo.Input("completion", options=["surface_fill", "off"], default="surface_fill",
                                tooltip="surface_fill: texels no camera saw are completed along the mesh surface "
                                        "(seamless across UV seams, never copied from unrelated UV islands). "
@@ -104,7 +115,13 @@ class FastSurfaceTextureBaker(io.ComfyNode):
                                tooltip="fast_detail: detail-preserving cubic reconstruction and best-camera "
                                        "fine detail, baked directly at texture_size. "
                                        "off_direct: original v0.4.0 direct bake. "
-                                       "Neither mode upscales images or requires additional models."),
+                                       "detail_consistent: experimental UV-correct filter footprints, full mips "
+                                       "and narrower mid-band view blending; "
+                                       "can reduce ghosting but may expose mismatched source views. "
+                                       "sharp_source: preserve source-scale edges/markings after enhancement; "
+                                       "blend only coarse colour, with bounded correction and no mesh-scale low-pass. "
+                                       "Disagreeing views can still show transitions. "
+                                       "Crop transforms from UTX 2.5 work with all modes. No AI required."),
                 io.Combo.Input("device", options=["auto", "cpu"], default="auto",
                                tooltip="auto: use the ComfyUI CUDA device (ComfyUI offloads models only if VRAM is "
                                        "short); falls back to CPU when there is still no room or CUDA runs out of memory."),

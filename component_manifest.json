@@ -96,5 +96,26 @@
   "build_date": "2026-10-16",
   "status": "v2 package; full-context VAE experimental/off by default; real 6GB untested",
   "inventory_note": "Model provenance and dependency inventory inherited from handoff; not new multi-GPU certification.",
-  "project_code_license": "GPL-3.0-only; vendored MIT/Apache license grants retained as separate notices"
+  "project_code_license": "GPL-3.0-only; vendored MIT/Apache license grants retained as separate notices",
+  "view_enhancer_release": {
+    "version": "2.2.0rc2",
+    "date": "2026-10-20",
+    "original_dependency_snapshot_preserved": true,
+    "models_redistributed": false,
+    "new_node": "UTXIntelligentViewEnhancer"
+  },
+  "sharp_source_release": {
+    "version": "2.2.0rc2",
+    "date": "2026-10-20",
+    "new_dependency_or_model": false,
+    "retained_modes": [
+      "fast_detail",
+      "off_direct",
+      "detail_consistent"
+    ],
+    "new_mode": "sharp_source",
+    "native_scale_target": true,
+    "optional_8192_atlas_requires": "sharp_source",
+    "original_camera_generation_and_mr_code_preserved": true
+  }
 }

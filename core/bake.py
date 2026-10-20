@@ -124,6 +124,8 @@ def bake_map(atlas, views, semantic, policy, power=4., depth_tolerance=.004,
              edge_pixels=6., best_view_mix=.5, view_indices=(0,1,2,3,4,5), original=None,gutter=8,
              blend_mode="detail_preserving", extra_views=(), visibility_mode="hybrid",
              geometry_context=None, visibility_diagnostics=False):
+    if views.sampling or any(v.sampling for v,_ in extra_views):
+        raise ValueError("Enhanced views require UTX 3 Fast Surface Texture Baker (crop-aware). Restore originals for the legacy advanced baker.")
     if atlas.geometry_id != views.plan.geometry_id or atlas.gbuffer.plan.identity != views.plan.identity:
         raise ValueError("Atlas and views must use the same calibrated geometry/view plan")
     if semantic in ("roughness","metallic") and views.task not in ("mr",semantic,"external"):

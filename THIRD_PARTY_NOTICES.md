@@ -1,5 +1,7 @@
 # Third-party code and host dependencies
 
+The 2.2.0rc2 `sharp_source` branch, row-streamed preparation and native-scale enhancement control are original implementations using the existing NumPy/SciPy/PyTorch APIs, under the project's existing GPL-3.0-only terms. No MVS-Texturing/OpenMVS code, graph solver, registration library or additional checkpoint is incorporated. No model weights are redistributed. The existing Real-ESRGAN BSD-3-Clause reference remains the tested selectable upscaler; the code does not automatically substitute weights.
+
 Project-authored UltraTex Modular v2 code is offered under GNU GPL-3.0-only, subject to copyright ownership. Previously published MIT-licensed editions retain their prior grants. Vendored third-party MIT/Apache-2.0 files retain their upstream copyright/license notices; their texts are reproduced alongside the code. No model weights are redistributed.
 
 ## Vendored sources
@@ -42,3 +44,16 @@ The new UltraTex Q4_0 expansion kernel uses the already-installed Triton runtime
 (MIT license). It introduces no additional dependency, copied third-party kernel,
 model artifact, or noncommercial dependency. Existing ComfyUI-GGUF Apache-2.0,
 SLA, UltraTex and model/LoRA terms remain unchanged.
+
+
+## Optional view-enhancement dependencies (checked2026-10-20)
+
+The latent-tile scheduling adapter in core/super_resolution.py follows the VOSR / ComfyUI-VOSR2 reference implementation, adapted for native UTX bundles, exact targets and foreground dependency scheduling. The external backend remains separately installed. Its Apache-2.0 text is retained in vendor/licenses/VOSR2-APACHE-2.0.txt. No checkpoint or third-party architecture source is bundled here.
+
+- VOSR project code and project-authored checkpoints: Apache-2.0; bundled third-party components retain their own terms. [VOSR model card](https://huggingface.co/CSWRY/VOSR/blob/main/README.md), [code license](https://github.com/cswry/VOSR/blob/main/LICENSE).
+- VOSR2's converted Qwen Image VAE follows its Wan2.1/Qwen upstream terms; those projects publish Apache-2.0. [Wan license](https://github.com/Wan-Video/Wan2.1/blob/main/LICENSE.txt), [Qwen model card](https://huggingface.co/Qwen/Qwen-Image).
+- DINOv2 code/weights: Apache-2.0 per [upstream repository](https://github.com/facebookresearch/dinov2/blob/main/LICENSE).
+- Official BiRefNet code and official ZhengPeng7 model card: MIT. [code license](https://github.com/ZhengPeng7/BiRefNet/blob/main/LICENSE), [model card](https://huggingface.co/ZhengPeng7/BiRefNet). This is not an authorization for every BiRefNet-derived model; BRIA RMBG checkpoints have separate terms. The local generic filenames supplied here do not authenticate checkpoint provenance.
+- Optional Real-ESRGAN research comparison: publisher repository is BSD-3-Clause; checkpoint taken from its official release. [license](https://github.com/xinntao/Real-ESRGAN/blob/master/LICENSE), [release](https://github.com/xinntao/Real-ESRGAN/releases/tag/v0.2.5.0). Research weight is not in the installable ZIP. Other UPSCALE_MODEL checkpoints require their own terms review.
+
+These observations do not confer unconditional commercial rights to a complete pipeline or its outputs. Existing FLUX9B / UltraTex adapter obligations in the original notices still apply, as do rights in the input assets. No change to those models or terms is implied by the new node.

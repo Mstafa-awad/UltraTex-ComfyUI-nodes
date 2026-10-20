@@ -369,6 +369,7 @@ class Surface:
     normals: np.ndarray        # conditioned shading normals (float32)
     timings: dict = field(default_factory=dict)
     _gutter_source: object = None   # (T*T,) int32 index of the nearest occupied texel (lazy)
+    uvs: object = None              # borrowed UVs; triangle area is invariant under V flip
 
     def gutter_source(self):
         """For every atlas pixel, the flat index of the nearest occupied texel (EDT, cached)."""
@@ -428,7 +429,7 @@ def prepare_surface(context, size):
     extra_area = (topology.face_area[raster.extra_face] / np.maximum(per_face[raster.extra_face], 1)).astype(np.float32)
     surface = Surface(key, topology, raster, texel_chart.astype(np.int32), texel_area, extra_area,
                       np.array(context.vertices, np.float32), np.array(context.normals, np.float32),
-                      {"topology": round(t1 - t0, 4), "uv_raster": round(t2 - t1, 4)})
+                      {"topology": round(t1 - t0, 4), "uv_raster": round(t2 - t1, 4)},uvs=context.uvs)
     _SURFACE_CACHE[key] = surface
     while len(_SURFACE_CACHE) > _SURFACE_CACHE_LIMIT:
         _SURFACE_CACHE.popitem(last=False)
@@ -464,7 +465,7 @@ class TexelGeometry:
         return TexelGeometry(self.P[idx], self.Ns[idx], self.Ng[idx], self.A[idx], int(idx.numel()))
 
 
-def texel_geometry(surface, device, chunk=1 << 20):
+def texel_geometry(surface, device, chunk=1 << 20, analytic_footprint=False):
     """Per-texel 3D point, unit shading normal, unit geometric normal and area on `device`."""
     torch = _torch()
     r = surface.raster
@@ -480,6 +481,23 @@ def texel_geometry(surface, device, chunk=1 << 20):
     Ns = torch.empty_like(P)
     Ng = torch.empty_like(P)
     area = np.concatenate([surface.texel_area, surface.extra_area]) if r.extra_face.size else surface.texel_area
+    if analytic_footprint:
+        # A triangle can be much smaller than a UV texel on a dense mesh.
+        # Dividing its area by its centre-claim count then underestimates the
+        # filter footprint and makes LOD depend on triangulation density.
+        # d(world area)/d(UV area) / atlas_size**2 is the local differential.
+        uv = surface.uvs
+        if uv is None:
+            raise ValueError("Differential footprint requires a freshly prepared UV surface")
+        area = np.array(area, copy=True)
+        for start in range(0,n,chunk):
+            stop=min(n,start+chunk);ids=face_all[start:stop]
+            tri=np.asarray(uv[surface.topology.faces[ids]],np.float64)
+            a=tri[:,1]-tri[:,0];b=tri[:,2]-tri[:,0]
+            uv_area=.5*np.abs(a[:,0]*b[:,1]-a[:,1]*b[:,0])
+            good=uv_area>1e-20
+            area[start:stop][good]=(surface.topology.face_area[ids[good]] /
+                (uv_area[good]*r.size*r.size)).astype(np.float32)
     A = torch.from_numpy(np.ascontiguousarray(area)).to(device)
     for s in range(0, n, chunk):
         e = min(n, s + chunk)
@@ -507,6 +525,7 @@ class ViewInput:
     image_ref: object           # ArrayRef (S,S,3) uint8
     mask_ref: object            # ArrayRef (S,S)
     depth_ref: object           # ArrayRef (R,R) float32 linear depth, 0 = background
+    transform: object = None   # optional ImageTransform; depth always stays original
 
 
 def collect_views(collection):
@@ -517,7 +536,7 @@ def collect_views(collection):
             # only four of the diagonal rig's tiles contain actual images.
             views.append(ViewInput(f"rig{si}:{vs.plan.names[vi] if vi < len(vs.plan.names) else vi}",
                                    np.asarray(vs.plan.matrices[vi], np.float64), vs.images[vi], vs.masks[vi],
-                                   vs.gbuffer.depths[vi]))
+                                   vs.gbuffer.depths[vi], vs.sampling[vi] if vs.sampling else None))
     return views
 
 
@@ -534,6 +553,8 @@ class PreparedView:
     edge_w: object     # (S*S,) float32 edge distance weight
     fg_fraction: float
     detail: object = None   # ViewDetail (detail mode only)
+    transform: object = None
+    edge_size: int = 0
 
 
 @dataclass
@@ -635,7 +656,7 @@ def _edge_weight(depth_t, S, torch):
     return w.reshape(-1).contiguous(), dist == 0
 
 
-def prepare_view(view: ViewInput, semantic, device, detail=False):
+def prepare_view(view: ViewInput, semantic, device, detail=False, complete_mips=False, stream=False):
     """detail=True also attaches the detail-mode data (Base Color only); fuse_views attaches it
     lazily per view instead, so the gains pass and the view cache stay as light as before."""
     torch = _torch()
@@ -655,23 +676,56 @@ def prepare_view(view: ViewInput, semantic, device, detail=False):
         raise ValueError(f"{view.label}: view mask and image sizes differ")
     S = image.shape[0]
     R = depth.shape[0]
-    rgb = image[..., :3].astype(np.float32) / (255.0 if image.dtype == np.uint8 else 1.0)
-    valid = (np.asarray(mask, np.float32) > 0.5).astype(np.float32)
-    if semantic == "base_color":
-        data = srgb_to_linear_np(rgb)
-    elif semantic == "mr":
-        data = rgb[..., 1:3]  # UltraTex MR: G = roughness, B = metallic (linear data)
-    else:
+    if semantic not in ("base_color", "mr"):
         raise ValueError(f"Unsupported bake semantic {semantic}")
+    if not stream:
+        rgb = image[..., :3].astype(np.float32) / (255.0 if image.dtype == np.uint8 else 1.0)
+        valid = (np.asarray(mask, np.float32) > 0.5).astype(np.float32)
+        data = srgb_to_linear_np(rgb) if semantic == "base_color" else rgb[..., 1:3]
+    else:
+        valid = None
     depth_t = torch.from_numpy(np.array(depth, np.float32)).to(device)
-    edge_w, edge_px = _edge_weight(depth_t, S, torch)
+    tr = view.transform
+    if tr is not None:
+        if semantic != "base_color":
+            raise ValueError("Crop enhancement metadata is supported for Base Color only")
+        if tr.output_size != S or tr.original_width != tr.original_height:
+            raise ValueError("Invalid enhanced image/original camera dimensions")
+    edge_size = tr.original_width if tr is not None else S
+    edge_w, edge_px = _edge_weight(depth_t, edge_size, torch)
+    if tr is not None:
+        # Occlusion edges are derived in the ORIGINAL depth/camera domain, then
+        # carried to the crop. Never resize depth or change visibility tolerance.
+        from .enhance import resample
+        if getattr(tr,"proxy_affine",False):
+            from .sharpbake import proxy_edge_mask
+            edge_px = proxy_edge_mask(edge_px,tr,torch)
+        else:
+            edge_px = torch.from_numpy(resample(edge_px.cpu().numpy(),tr,True) > .01).to(device)
+        valid = np.clip(np.asarray(mask,np.float32),0,1)
+    if valid is None:
+        valid = (np.asarray(mask, np.float32) > 0.5).astype(np.float32)
     valid_t = torch.from_numpy(valid).to(device) * (~edge_px).to(torch.float32)
-    data_t = torch.from_numpy(np.ascontiguousarray(data.transpose(2, 0, 1))).to(device)
-    image_t = torch.cat([data_t * valid_t[None], valid_t[None]], 0)[None].contiguous()
+    if not stream:
+        data_t = torch.from_numpy(np.ascontiguousarray(data.transpose(2, 0, 1))).to(device)
+        image_t = torch.cat([data_t * valid_t[None], valid_t[None]], 0)[None].contiguous()
+    else:
+        # Same per-pixel arithmetic, in bounded rows. Avoid simultaneous full
+        # sRGB/linear/CHW/concatenation copies of enhanced 8K images.
+        channels=3 if semantic=="base_color" else 2
+        image_t=torch.empty((1,channels+1,S,S),dtype=torch.float32,device=device)
+        image_t[0,-1]=valid_t
+        for row in range(0,S,256):
+            stop=min(S,row+256)
+            rgb=image[row:stop,:,:3].astype(np.float32)/(255. if image.dtype==np.uint8 else 1.)
+            data=srgb_to_linear_np(rgb) if semantic=="base_color" else rgb[...,1:3]
+            data_t=torch.from_numpy(np.ascontiguousarray(data.transpose(2,0,1))).to(device)
+            image_t[0,:channels,row:stop]=data_t*valid_t[None,row:stop]
+        del rgb,data,data_t
     # Mask-normalised mip levels: used when one atlas texel covers several view pixels.
     import torch.nn.functional as F
     levels = [image_t]
-    for _ in range(2):
+    for _ in range(16 if complete_mips else 2):
         if levels[-1].shape[-1] % 2 or levels[-1].shape[-1] < 32:
             break
         levels.append(F.avg_pool2d(levels[-1], 2))
@@ -684,7 +738,7 @@ def prepare_view(view: ViewInput, semantic, device, detail=False):
                       torch.tensor(trans, dtype=torch.float32, device=device),
                       torch.tensor(center, dtype=torch.float32, device=device),
                       depth_t.reshape(-1).contiguous(), R, levels, S, edge_w,
-                      float(valid.mean()))
+                      float(valid.mean()), transform=tr, edge_size=edge_size)
     if detail and semantic == "base_color":
         attach_detail(pv)
     return pv
@@ -710,6 +764,18 @@ def _sample_levels(view, u, v, lod, torch):
 
     out = fetch(0, u, v)
     top = len(view.levels) - 1
+    if top > 2:
+        need = (lod > .05).nonzero(as_tuple=True)[0]
+        if need.numel():
+            l=lod[need].clamp(0,top)
+            mixed=torch.zeros_like(out[need])
+            for level in range(top+1):
+                weights=(1-(l-level).abs()).clamp(0,1)
+                use=(weights>0).nonzero(as_tuple=True)[0]
+                if use.numel():
+                    mixed[use]+=fetch(level,u[need[use]],v[need[use]])*weights[use,None]
+            out[need]=mixed
+        return out
     if top >= 1:
         need = (lod > 0.05).nonzero(as_tuple=True)[0]
         if need.numel():
@@ -756,7 +822,8 @@ def _sample_cubic(view, u, v, x0, y0, colour, lod, torch, need=None):
     return colour
 
 
-def _project(geo, view: PreparedView, torch, detail=False, with_footprint=False, qfloor=None):
+def _project(geo, view: PreparedView, torch, detail=False, with_footprint=False, qfloor=None,
+             source_detail=False):
     """Return (colour (n,C), quality (n,)) for one view; quality 0 = not observed.
 
     detail=True (view prepared with detail data): returns (colour, quality, fine_base (n, C)) with
@@ -782,7 +849,7 @@ def _project(geo, view: PreparedView, torch, detail=False, with_footprint=False,
     colour_out = torch.zeros((n, C), dtype=torch.float32, device=P.device)
     q_out = torch.zeros(n, dtype=torch.float32, device=P.device)
     extra_out = None
-    if detail:
+    if detail or source_detail:
         extra_out = torch.zeros((n, C), dtype=torch.float32, device=P.device)
     elif with_footprint:
         extra_out = torch.zeros(n, dtype=torch.float32, device=P.device)
@@ -829,17 +896,39 @@ def _project(geo, view: PreparedView, torch, detail=False, with_footprint=False,
             near_same |= sel & same
     vis = torch.where(near_same, support * (1 - front) ** 2, torch.zeros_like(support))
     # footprint of the texel in view pixels (geometric mean of the projected axes)
-    footprint = (A * cos.clamp_min(0.05)).clamp_min(0).sqrt() * (view.S * FOCAL) * inv
+    effective_size = view.S
+    if view.transform is not None:
+        tr = view.transform
+        effective_size = math.sqrt(tr.original_width*tr.original_height *
+                                   tr.resized_width/tr.width*tr.resized_height/tr.height)
+    footprint = (A * cos.clamp_min(0.05)).clamp_min(0).sqrt() * (effective_size * FOCAL) * inv
     lod = torch.log2(footprint.clamp_min(1.0))
+    # Keep original UV for quality/edge sampling. Only RGB and its mask use
+    # enhanced coordinates (align_corners=False: pixel centre index = u*S-.5).
+    original_u, original_v = u, v
+    if view.transform is not None:
+        u,v = view.transform.uv(u,v)
     sample = _sample_levels(view, u, v, lod, torch)
     alpha = sample[:, -1]
     colour = sample[:, :-1] / alpha.clamp_min(1e-4)[:, None]
     S = view.S
-    xs = (u * S).floor().clamp(0, S - 1).long()
-    ys = (v * S).floor().clamp(0, S - 1).long()
-    edge = view.edge_w[ys * S + xs]
+    E = view.edge_size or S
+    xs = (original_u * E).floor().clamp(0, E - 1).long()
+    ys = (original_v * E).floor().clamp(0, E - 1).long()
+    edge = view.edge_w[ys * E + xs]
     q = torch.where(alpha > 0.05, cos.clamp(0, 1) * vis * edge, torch.zeros_like(vis))
-    if detail:
+    if view.transform is not None:
+        tr = view.transform
+        within = ((u*S >= tr.pad_left) & (u*S < tr.pad_left+tr.resized_width) &
+                  (v*S >= tr.pad_top) & (v*S < tr.pad_top+tr.resized_height))
+        q = q * within
+    if source_detail:
+        # The optional source-calibrated path keeps a small colour-base image;
+        # it does not allocate full-resolution min/max or fine-band images.
+        from .sharpbake import sample_source_detail
+        colour, low = sample_source_detail(view, u, v, colour, lod, q, torch)
+        extra_out[idx] = low
+    elif detail:
         import torch.nn.functional as F
         x0 = (u * S - 0.5).floor().long()
         y0 = (v * S - 0.5).floor().long()
@@ -860,15 +949,16 @@ def _smoothstep(x, lo, hi):
     return (t * t * (3 - 2 * t)).astype(np.float32)
 
 
-def _as_prepared(view, semantic, device):
-    return view if isinstance(view, PreparedView) else prepare_view(view, semantic, device)
+def _as_prepared(view, semantic, device, complete_mips=False):
+    return view if isinstance(view, PreparedView) else prepare_view(view, semantic, device, complete_mips=complete_mips)
 
 
 def _view_bytes(view, semantic):
     R = int(view.depth_ref.shape[0])
     S = int(view.image_ref.shape[0])
     C = 3 if semantic == "base_color" else 2
-    return R * R * 4 + int(S * S * (C + 1) * 4 * 1.34) + S * S * 4
+    E = view.transform.original_width if view.transform is not None else S
+    return R * R * 4 + int(S * S * (C + 1) * 4 * 1.34) + E * E * 4
 
 
 def _density_report(Q, FP):
@@ -894,7 +984,7 @@ def _density_report(Q, FP):
                     if med < 0.95 else "the atlas does not exceed the views' sampling density"}
 
 
-def estimate_gains(geo, views, device, max_samples=200_000):
+def estimate_gains(geo, views, device, max_samples=200_000, complete_mips=False):
     """Robust per-view, per-channel multiplicative colour gains (log-domain least squares).
     Also returns the atlas/view sampling-density statistics of the subsample."""
     torch = _torch()
@@ -908,7 +998,7 @@ def estimate_gains(geo, views, device, max_samples=200_000):
     cols, qs, fps = [], [], []
     for view in views:
         _interrupt()
-        pv = _as_prepared(view, "base_color", device)
+        pv = _as_prepared(view, "base_color", device, complete_mips=complete_mips)
         c, q, fp = _project(sub, pv, torch, with_footprint=True)
         cols.append(c.float().cpu().numpy())
         qs.append(q.float().cpu().numpy())
@@ -917,6 +1007,11 @@ def estimate_gains(geo, views, device, max_samples=200_000):
     C = np.stack(cols)  # (V,n,3)
     Q = np.stack(qs)    # (V,n)
     density = _density_report(Q, np.stack(fps))
+    if density:
+        density["footprint_method"] = ("world/UV differential area" if complete_mips else
+            "legacy triangle area/claim-count heuristic; can understate footprint on dense meshes")
+        if not complete_mips:
+            density["interpretation_limit"] = "Not a certified sampling-density measurement; compare detail_consistent for differential footprints."
     logC = np.log(np.clip(C, 1e-3, None))
     lum_ok = C.mean(2) > 0.01
     gains = np.zeros((count, 3))
@@ -959,7 +1054,7 @@ def estimate_gains(geo, views, device, max_samples=200_000):
     return g, {"pairs_used": int(pairs), "samples": int(idx.numel()), "sampling_density": density}
 
 
-def fuse_views(surface, geo, views, semantic, device, gains=None, chunk=1 << 20, detail=False):
+def fuse_views(surface, geo, views, semantic, device, gains=None, chunk=1 << 20, detail=False, consistent=False):
     """Two-band confidence-weighted fusion.
 
     sharp: weights q**p_sharp (near best-view, keeps detail crisp, no hard switch)
@@ -977,6 +1072,10 @@ def fuse_views(surface, geo, views, semantic, device, gains=None, chunk=1 << 20,
     C = 3 if semantic == "base_color" else 2
     detail = bool(detail and semantic == "base_color")
     p_sharp = FUSION_POWER if len(views) <= 6 else FUSION_POWER_MANY
+    if consistent and semantic == "base_color":
+        # Optional narrower but continuous handover for mid-frequency features.
+        # Unlike a hard argmax this does not create an abrupt camera boundary.
+        p_sharp = 32.0
     acc_s = torch.zeros((n, C), dtype=torch.float32, device=device)
     acc_b = torch.zeros((n, C), dtype=torch.float32, device=device)
     w_s = torch.zeros(n, dtype=torch.float32, device=device)
@@ -1002,7 +1101,7 @@ def fuse_views(surface, geo, views, semantic, device, gains=None, chunk=1 << 20,
 
     for vi, view in enumerate(views):
         _interrupt()
-        pv = _as_prepared(view, semantic, device)
+        pv = _as_prepared(view, semantic, device, complete_mips=consistent)
         cached = pv is view
         if detail:
             attach_detail(pv)
@@ -1377,10 +1476,13 @@ def _estimate_bytes(n_texels, max_depth_px, max_image_px, chunk=1 << 20, detail=
 
 
 def bake_branch(surface, collection, semantic, device, completion=True, harmonize=True, timer=None,
-                detail=False):
+                detail=False, consistent=False, source_sharp=False):
     """Bake one semantic ('base_color' or 'mr') from a view collection on a shared surface.
     detail=True (Base Color only) uses cubic reconstruction + a near single-camera fine band;
     visibility, confidence, coverage and completion are identical to the standard path."""
+    if source_sharp and semantic == "base_color":
+        from .sharpbake import bake_source_sharp
+        return bake_source_sharp(surface, collection, device, completion, harmonize, timer)
     torch = _torch()
     timer = timer or StageTimer()
     detail = bool(detail and semantic == "base_color")
@@ -1390,18 +1492,18 @@ def bake_branch(surface, collection, semantic, device, completion=True, harmoniz
         need = sum(_view_bytes(v, semantic) for v in views)
         budget = VIEW_CACHE_BYTES["cuda" if device.type == "cuda" else "cpu"]
         if need <= budget:
-            views = [prepare_view(v, semantic, device) for v in views]
+            views = [prepare_view(v, semantic, device, complete_mips=consistent) for v in views]
             timer.lap(f"{semantic}:prepare_views")
-    geo = texel_geometry(surface, device)
+    geo = texel_geometry(surface, device, analytic_footprint=consistent)
     if device.type == "cuda":
         torch.cuda.synchronize(device)
     timer.lap(f"{semantic}:texel_geometry")
     gains = None
     gain_report = {}
     if semantic == "base_color" and harmonize and len(views) > 1:
-        gains, gain_report = estimate_gains(geo, views, device)
+        gains, gain_report = estimate_gains(geo, views, device, complete_mips=consistent)
         timer.lap(f"{semantic}:view_harmonisation")
-    fused = fuse_views(surface, geo, views, semantic, device, gains, detail=detail)
+    fused = fuse_views(surface, geo, views, semantic, device, gains, detail=detail, consistent=consistent)
     sharp, broad, qmax, nviews, per_view, p_sharp = fused[:6]
     fine, best_sharp = fused[6] if detail else (None, None)
     del fused
@@ -1420,6 +1522,9 @@ def bake_branch(surface, collection, semantic, device, completion=True, harmoniz
     colour = np.where(seen[:, None], sharp + surface_lowpass(surface, diff, seen.astype(np.float64)), 0.0)
     del diff, broad
     fusion_info = {"sharp_power": p_sharp, "broad_power": FUSION_POWER_BROAD}
+    if consistent:
+        fusion_info["view_handover"] = "continuous q**32 mid band; may expose view disagreement"
+        fusion_info["footprint"] = "world/UV differential area per atlas texel; full mip pyramid"
     if fine is not None:
         # detail mode: add the fine band (cubic reconstruction minus G(1 px)) of ~the best camera.
         # Never extrapolate beyond both the fused colour and the best camera's own sharp sample
@@ -1465,20 +1570,32 @@ def bake_branch(surface, collection, semantic, device, completion=True, harmoniz
 
 
 def bake_surface_maps(albedo_setup, albedo_views, size, completion=True, mr_setup=None, mr_views=None,
-                      device_preference="auto", harmonize=True, detail=False):
+                      device_preference="auto", harmonize=True, detail=False, consistent=False, source_sharp=False):
     """Bake Base Color (+ Roughness/Metallic) atlases. Returns (maps, coverage, report).
     detail=True applies the detail-preserving reconstruction/fusion to Base Color only;
     Roughness/Metallic always use the standard path (scalar material data)."""
     torch = _torch()
     timer = StageTimer()
     context = albedo_setup.context
+    if source_sharp:
+        # An 8K atlas and an older cached dense-mesh raster should not coexist
+        # just to retain a warm cache on a 16GB machine. Keep the requested
+        # surface if it already exists; MR reuses it in this same call.
+        if int(size)>=8192 or any(key[-1]>=8192 for key in _SURFACE_CACHE):
+            current=(str(context.atlas_id),str(context.geometry_id),int(size))
+            for key in list(_SURFACE_CACHE):
+                if key!=current: del _SURFACE_CACHE[key]
+        if int(size)>=8192:
+            from .runtime import ram_preflight
+            ram_preflight(int(size)**2*96,albedo_setup.runtime.system_headroom_mb)
     if mr_views is not None and mr_setup is not None and mr_setup.context.atlas_id != context.atlas_id:
         raise ValueError("MR setup uses a different UV layout than Albedo")
     surface, cache_hit = prepare_surface(context, int(size))
     timer.lap("uv_raster_and_topology")
     n = surface.raster.texel.size + surface.raster.extra_face.size
     depth_px = max(int(vs.gbuffer.depths[0].shape[0]) for vs in albedo_views.sets)
-    image_px = max(int(vs.images[0].shape[0]) for vs in albedo_views.sets)
+    image_px = max(max(int(vs.images[i].shape[0]),vs.sampling[i].original_width if vs.sampling else 0)
+                   for vs in albedo_views.sets for i in vs.plan.active_indices)
     if mr_views is not None:
         depth_px = max(depth_px, *(int(vs.gbuffer.depths[0].shape[0]) for vs in mr_views.sets))
         image_px = max(image_px, *(int(vs.images[0].shape[0]) for vs in mr_views.sets))
@@ -1512,7 +1629,7 @@ def bake_surface_maps(albedo_setup, albedo_views, size, completion=True, mr_setu
         maps = {}
         with torch.inference_mode():
             base, alpha, stats = bake_branch(surface, albedo_views, "base_color", dev, completion, harmonize, timer,
-                                             detail=detail)
+                                             detail=detail, consistent=consistent, source_sharp=source_sharp)
             report["base_color"] = stats
             maps["base_color"] = to_atlas(surface, base, fill_gutter=True)
             coverage = coverage_atlas(surface, alpha)

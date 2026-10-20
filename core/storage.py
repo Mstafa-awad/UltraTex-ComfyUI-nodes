@@ -10,7 +10,7 @@ from pathlib import Path
 from . import contracts as c
 from .runtime import atomic_json, interrupt
 
-_TYPES={x.__name__:x for x in (c.ArrayRef,c.ViewPlan,c.GBuffer,c.ViewSet,c.ViewCollection)}
+_TYPES={x.__name__:x for x in (c.ArrayRef,c.ViewPlan,c.GBuffer,c.ViewSet,c.ViewCollection,c.ImageTransform)}
 
 
 def save_views(views,directory,prefix="ultratex_views"):
@@ -31,21 +31,22 @@ def save_views(views,directory,prefix="ultratex_views"):
                 copied.add(name)
             return {"type":"ArrayRef","path":"arrays/"+name,"shape":list(value.shape),"dtype":value.dtype,"digest":value.digest}
         if dataclasses.is_dataclass(value) and type(value).__name__ in _TYPES:
-            return {"type":type(value).__name__,**{f.name:encode(getattr(value,f.name)) for f in dataclasses.fields(value)}}
+            return {"type":type(value).__name__,**{f.name:encode(getattr(value,f.name)) for f in dataclasses.fields(value)
+                if not (isinstance(value,c.ViewSet) and f.name in ("sampling","original_images","original_masks") and not getattr(value,f.name))}}
         if isinstance(value,(tuple,list)):
             return [encode(x) for x in value]
         return value
     # A failed/cancelled write leaves no completed manifest and cannot be mistaken for a valid bundle.
     document=encode(views)
     path=folder/"views.utx.json"
-    atomic_json(path,{"version":1,"complete":True,"views":document})
+    atomic_json(path,{"version":2 if any(v.sampling for v in views.sets) else 1,"complete":True,"views":document})
     return str(path)
 
 
 def load_views(manifest):
     path=Path(manifest).expanduser().resolve()
     document=json.loads(path.read_text(encoding="utf-8"))
-    if document.get("version")!=1 or document.get("complete") is not True:
+    if document.get("version") not in (1,2) or document.get("complete") is not True:
         raise ValueError("Unsupported or incomplete UltraTex view bundle")
     def decode(value):
         if isinstance(value,list):
@@ -71,4 +72,12 @@ def load_views(manifest):
     for view in views.sets:
         if len(view.images)!=6 or len(view.masks)!=6 or len(view.plan.matrices)!=6:
             raise ValueError("View bundle must contain complete six-view sets")
+        if view.sampling and len(view.sampling) != 6:
+            raise ValueError("Enhanced bundle needs six crop transforms per rig")
+        if view.sampling and (len(view.original_images)!=6 or len(view.original_masks)!=6):
+            raise ValueError("Enhanced bundle is missing its original images/masks for rollback")
+        if view.sampling:
+            for image,original,tr in zip(view.images,view.original_images,view.sampling):
+                if image.shape[:2]!=(tr.output_size,tr.output_size) or original.shape[:2]!=(tr.original_height,tr.original_width):
+                    raise ValueError("Enhanced bundle image dimensions disagree with its transform")
     return views

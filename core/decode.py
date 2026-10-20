@@ -116,9 +116,13 @@ def inspect_views(collection,job_index=0,view_indices=(0,1,2,3,4,5),preview_size
     for i in view_indices:
         rgb=views.images[i].read()
         mask=views.masks[i].read()
+        # Enhancement stores float RGB without another 8-bit quantisation.
+        # Convert only the preview; retain original data for baking/save bundles.
+        if rgb.dtype != np.uint8:
+            rgb=np.clip(rgb*255+.5,0,255).astype(np.uint8)
         if preview_size and rgb.shape[0]>preview_size:
             rgb=np.asarray(Image.fromarray(rgb).resize((preview_size,preview_size),Image.Resampling.LANCZOS))
-            mask=np.asarray(Image.fromarray(np.uint8(mask)*255).resize((preview_size,preview_size),Image.Resampling.NEAREST))>0
+            mask=np.asarray(Image.fromarray(np.asarray(mask,np.float32)).resize((preview_size,preview_size),Image.Resampling.BILINEAR))
         images.append(rgb.astype(np.float32)/255.)
         masks.append(mask.astype(np.float32))
     return torch.from_numpy(np.stack(images)),torch.from_numpy(np.stack(masks)),views.plan
