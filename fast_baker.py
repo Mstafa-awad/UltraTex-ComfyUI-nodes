@@ -18,7 +18,8 @@ def _image(array):
 
 
 # Retained modes preserve their calculations; sharp_source is a separate branch.
-UPSCALE_MODES = ("fast_detail", "off_direct", "detail_consistent", "sharp_source")
+UPSCALE_MODES = ("fast_detail", "off_direct", "detail_consistent", "sharp_source", "sharp_coherent", "sharp_anchor", "sharp_anchor_v2")
+SHARP_MODES = frozenset(("sharp_source", "sharp_coherent", "sharp_anchor", "sharp_anchor_v2"))
 
 
 def run_fast_bake(albedo_setup, albedo_views, texture_size=2048, completion="surface_fill",
@@ -39,15 +40,16 @@ def run_fast_bake(albedo_setup, albedo_views, texture_size=2048, completion="sur
         raise ValueError("texture_size must be 1024, 2048, 4096 or 8192")
     if upscale_mode not in UPSCALE_MODES:
         raise ValueError(f"Unknown upscale_mode {upscale_mode!r}; choose one of {UPSCALE_MODES}")
-    if target==8192 and upscale_mode!='sharp_source':
-        raise ValueError("8192 atlas requires sharp_source's bounded-memory preparation. Use 4096 with the retained modes.")
+    if target==8192 and upscale_mode not in SHARP_MODES:
+        raise ValueError("8192 atlas requires a sharp mode. Use 4096 with the retained modes.")
     if completion not in ("surface_fill", "off"):
         raise ValueError("completion must be surface_fill or off")
 
     maps, coverage, report = bake_surface_maps(
         albedo_setup, albedo_views, target, completion == "surface_fill",
         mr_setup, mr_views, device_preference=device, detail=(upscale_mode in ("fast_detail", "detail_consistent")),
-        consistent=(upscale_mode == "detail_consistent"),source_sharp=(upscale_mode == "sharp_source"))
+        consistent=(upscale_mode == "detail_consistent"),source_sharp=(upscale_mode == "sharp_source"),coherent=(upscale_mode=='sharp_coherent'),
+        anchor=(upscale_mode in ('sharp_anchor','sharp_anchor_v2')),exact_support=(upscale_mode=='sharp_anchor_v2'))
 
     report["upscale_mode"] = upscale_mode
     report["output_size"] = target
@@ -59,7 +61,7 @@ def run_fast_bake(albedo_setup, albedo_views, texture_size=2048, completion="sur
     t0 = time.perf_counter()
     infos = {name: MapInfo(context.atlas_id, name, target, target, provenance="utx-fast-surface-bake")
              for name in maps}
-    tensors = {name: (torch.from_numpy(np.asarray(value,np.float32)[None]) if upscale_mode=='sharp_source' else _image(value))
+    tensors = {name: (torch.from_numpy(np.asarray(value,np.float32)[None]) if upscale_mode in SHARP_MODES else _image(value))
                for name, value in maps.items()}
     mesh, _ = apply_materials(context.mesh, uv_convention=getattr(context, "uv_convention", "v_down"),
                               map_infos=infos, **tensors)
@@ -72,7 +74,7 @@ def run_fast_bake(albedo_setup, albedo_views, texture_size=2048, completion="sur
         m = material.get("metallic_factor", 0.0)
         r = 0.7 if r is None or r < 0 else float(r)
         m = 0.0 if m is None or m < 0 else float(m)
-        if upscale_mode=='sharp_source':
+        if upscale_mode in SHARP_MODES:
             # Keep the exact IMAGE shape/values without allocating two extra
             # 768MiB constant maps for an albedo-only 8K result.
             roughness=torch.full((1,1,1,3),r).expand_as(tensors['base_color'])
@@ -93,7 +95,7 @@ def run_fast_bake(albedo_setup, albedo_views, texture_size=2048, completion="sur
     log.info(summary)
     report_text = json.dumps(report, indent=2, default=str)
     return (mesh, glb, tensors["base_color"], roughness, metallic,
-            torch.from_numpy((np.asarray(coverage,np.float32) if upscale_mode=='sharp_source' else np.array(coverage,np.float32))[None]), report_text)
+            torch.from_numpy((np.asarray(coverage,np.float32) if upscale_mode in SHARP_MODES else np.array(coverage,np.float32))[None]), report_text)
 
 
 class FastSurfaceTextureBaker(io.ComfyNode):
@@ -105,7 +107,7 @@ class FastSurfaceTextureBaker(io.ComfyNode):
                 SETUP.Input("albedo_setup"), VIEWS.Input("albedo_views"),
                 io.Combo.Input("texture_size", options=[1024, 2048, 4096, 8192], default=2048,
                                tooltip="Final exported atlas size. UTX2.5 target changes source views only. "
-                                       "8192 requires sharp_source and takes more bake time and RAM."),
+                                       "8192 requires a sharp mode and takes more bake time and RAM."),
                 io.Combo.Input("completion", options=["surface_fill", "off"], default="surface_fill",
                                tooltip="surface_fill: texels no camera saw are completed along the mesh surface "
                                        "(seamless across UV seams, never copied from unrelated UV islands). "
@@ -121,10 +123,15 @@ class FastSurfaceTextureBaker(io.ComfyNode):
                                        "sharp_source: preserve source-scale edges/markings after enhancement; "
                                        "blend only coarse colour, with bounded correction and no mesh-scale low-pass. "
                                        "Disagreeing views can still show transitions. "
+                                       "sharp_anchor: accepted rc3 front-view RGB; other views cover hidden/grazing areas. "
+                                       "sharp_anchor_v2: same anchor with exact mip/cubic support checks at surface boundaries. "
+                                       "sharp_coherent: experimental automatic spatial patch selection with bounded log-colour seam correction. "
+                                       "Adds a CPU graph-cut guide pass; retained sharp_source is the rollback. "
                                        "Crop transforms from UTX 2.5 work with all modes. No AI required."),
                 io.Combo.Input("device", options=["auto", "cpu"], default="auto",
-                               tooltip="auto: use the ComfyUI CUDA device (ComfyUI offloads models only if VRAM is "
-                                       "short); falls back to CPU when there is still no room or CUDA runs out of memory."),
+                               tooltip="auto: attempt the configured ComfyUI CUDA device after model offload. "
+                                       "No predicted-memory refusal or automatic CPU rerun; actual allocation errors propagate. "
+                                       "cpu explicitly selects CPU execution."),
                 SETUP.Input("mr_setup", optional=True), VIEWS.Input("mr_views", optional=True),
             ],
             [
@@ -150,3 +157,4 @@ class FastSurfaceTextureBaker(io.ComfyNode):
 
 
 FAST_BAKER_NODES = [FastSurfaceTextureBaker]
+

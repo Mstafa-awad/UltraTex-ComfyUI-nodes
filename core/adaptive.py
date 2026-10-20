@@ -70,8 +70,6 @@ class Controller:
         state=snapshot(self.device)
         if state is None or getattr(self.policy,'performance_mode','adaptive')=='original':return estimate
         decision=decide(state,self.policy)
-        if estimate+128*MiB>decision.capacity:
-            raise MemoryError(f'UltraTex needs an estimated {estimate/MiB:.0f} MiB activation/headroom reservation plus weight workspace; current GPU budget is {decision.capacity/MiB:.0f} MiB. Quality settings were preserved. Use original fallback only if you accept its native memory behavior.')
         # CUDA free memory / ComfyUI already account for driver pressure.
         # Add only the user-requested exclusion; adding physical-DXGI budget
         # again double-counts WDDM pressure and needlessly evicts packed weights.
@@ -105,16 +103,11 @@ class Controller:
         envelope=4096 if bounded else 5680
         required=int(envelope*MiB*(size/2048)**2*(element_bytes/2))+decision.headroom+256*MiB
         self.records.append(dict(stage='vae_encode_preflight',required=required,capacity=decision.capacity))
-        if required>decision.capacity:
-            raise MemoryError(f'UltraTex unchanged dense VAE encode has a conservative {required/MiB:.0f} MiB envelope at {size}px; current GPU budget is {decision.capacity/MiB:.0f} MiB. This exact-quality path is not validated within that budget; resolution and tiling were not changed.')
     def after_step(self,model):
         if getattr(self.policy,'performance_mode','adaptive')=='original':return
         state=snapshot(self.device)
         if state is None:return
         decision=decide(state,self.policy)
-        envelope=getattr(self,'activation_estimate',self.reserved_envelope)
-        if envelope+128*MiB>decision.capacity:
-            raise MemoryError('UltraTex GPU budget fell below the unchanged-quality activation envelope. Retry after GPU memory pressure recovers; no quality settings were reduced.')
         reusable=max(0,state.reserved-state.allocated)
         active_local=max(0,state.local_usage-reusable)
         over=max(0,active_local-(decision.capacity-decision.headroom//2)) if state.local_budget else 0

@@ -89,7 +89,7 @@ def compute_normals(vertices, faces, normals=None):
     if still.any():
         if (~still).any():
             from scipy.spatial import cKDTree
-            _, nearest = cKDTree(vertices[~still]).query(vertices[still])
+            _, nearest = cKDTree(vertices[~still]).query(vertices[still], workers=-1)
             result[still] = result[~still][nearest]
         else:
             result[still] = (0., 0., 1.)

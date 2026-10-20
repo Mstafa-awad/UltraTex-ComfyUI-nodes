@@ -424,7 +424,7 @@ def repair_atlas(image,holes,atlas,mode="none",padding=8,max_fill_distance=32):
                 if not select.any():continue
                 # Larger search pool allows excluding a near-but-opposite surface.
                 k=min(12 if mode=="normal_aware_surface" else 4,len(positions))
-                distances,ids=tree.query(p[select],k=k)
+                distances,ids=tree.query(p[select],k=k,workers=-1)
                 if k==1:
                     result=colors[ids]
                 elif mode=="normal_aware_surface":

@@ -11,6 +11,7 @@ from collections import defaultdict
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import re
 import sys
@@ -119,8 +120,8 @@ def depth_weights(kind,i,mode):
     left=int(math.floor(point)); right=int(math.ceil(point)); mix=point-left
     return [(left,1-mix),(right,mix)] if right!=left else [(left,1.)]
 
-def convert(path,out_path,*,depth='nearest',dtype='fp16',source_scale=1.,threads=4,report_path=None):
-    torch.set_num_threads(max(1,threads))
+def convert(path,out_path,*,depth='nearest',dtype='fp16',source_scale=1.,threads=0,report_path=None):
+    torch.set_num_threads(max(1,threads or os.cpu_count() or 1))
     if path.resolve()==out_path.resolve():raise ValueError('Cannot overwrite source')
     if source_scale<=0:raise ValueError('Source alpha/rank must be positive')
     begin=time.perf_counter();saved={};records=[]
@@ -179,7 +180,7 @@ def main():
     ap.add_argument('--depth',choices=['blend','nearest'],default='nearest')
     ap.add_argument('--dtype',choices=['fp16','bf16','fp32'],default='fp16')
     ap.add_argument('--source-scale',type=float,default=1.0,help='PEFT alpha/rank: if source alpha is 64 and rank is 64, use 1')
-    ap.add_argument('--threads',type=int,default=4)
+    ap.add_argument('--threads',type=int,default=0,help='CPU math threads; 0 uses all logical processors')
     args=ap.parse_args()
     if not args.input.is_file():ap.error('Input file not found')
     if args.input.suffix.lower()!='.safetensors':ap.error('Please drag extracted .safetensors, not RAR/ZIP')

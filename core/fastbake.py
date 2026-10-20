@@ -63,7 +63,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from .geometry import FOCAL
+from .geometry import FOCAL, GLTF_TO_BLENDER
 
 NEAR = 0.05
 # Visibility: same-surface tolerance = TOL_ABS + TOL_PX * (world size of one depth pixel)
@@ -225,6 +225,7 @@ class UVRaster:
     extra_pos: np.ndarray = field(default_factory=lambda: np.zeros(0, np.int32))    # index into texel
     extra_face: np.ndarray = field(default_factory=lambda: np.zeros(0, np.int32))
     extra_bary: np.ndarray = field(default_factory=lambda: np.zeros((0, 3), np.float32))
+    cpu_workers: int = 1
 
 
 def rasterize_uv(uv_vdown, faces, size, chunk=1 << 21):
@@ -253,13 +254,10 @@ def rasterize_uv(uv_vdown, faces, size, chunk=1 << 21):
     cum = np.cumsum(counts)
     total = int(cum[-1]) if cum.size else 0
     out_t, out_f, out_b, out_m = [], [], [], []
-    start = 0
     nfaces = len(f)
     eps = 1e-7
-    while start < nfaces and total:
-        base = int(cum[start - 1]) if start else 0
-        stop = int(np.searchsorted(cum, base + chunk, side="right"))
-        stop = max(stop, start + 1)
+    def raster_chunk(bounds):
+        start, stop = bounds
         cnt = counts[start:stop]
         n = int(cnt.sum())
         if n:
@@ -276,13 +274,39 @@ def rasterize_uv(uv_vdown, faces, size, chunk=1 << 21):
             w2 = 1.0 - w0 - w1
             inside = (w0 >= -eps) & (w1 >= -eps) & (w2 >= -eps)
             if inside.any():
-                out_t.append(yi[inside] * size + xi[inside])
-                out_f.append(fid[inside])
                 bb = np.stack((w0[inside], w1[inside], w2[inside]), 1)
-                out_b.append(bb.astype(np.float32))
-                out_m.append(np.min(bb, 1).astype(np.float32))
-        start = stop
-        _interrupt()
+                return (yi[inside] * size + xi[inside], fid[inside],
+                        bb.astype(np.float32), np.min(bb, 1).astype(np.float32))
+        return None
+
+    from .cpu import parallel_workers
+    from concurrent.futures import ThreadPoolExecutor
+    workers = parallel_workers() if total >= chunk else 1
+    # Divide the existing aggregate scratch allowance among workers; never
+    # give every worker its own full-size projection/raster chunk.
+    work_chunk = max(1, chunk // workers)
+    if workers > 1 and counts.max(initial=0) > work_chunk:
+        # A single triangle cannot be split by this routine. Do not multiply
+        # that oversized allocation by running several such jobs together.
+        workers = 1
+        work_chunk = chunk
+    ranges=[];start=0
+    while start < nfaces and total:
+        base=int(cum[start-1]) if start else 0
+        stop=max(start+1,int(np.searchsorted(cum,base+work_chunk,side='right')))
+        ranges.append((start,stop));start=stop
+    def consume(results):
+        for result in results:
+            if result is not None:
+                for dest, array in zip((out_t,out_f,out_b,out_m),result):
+                    dest.append(array)
+            _interrupt()
+    if workers > 1:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            # Ordered consumption preserves stable overlap ownership/tie order.
+            consume(pool.map(raster_chunk,ranges))
+    else:
+        consume(map(raster_chunk,ranges))
     if out_t:
         texel = np.concatenate(out_t)
         face = np.concatenate(out_f)
@@ -350,7 +374,7 @@ def rasterize_uv(uv_vdown, faces, size, chunk=1 << 21):
             texel, face, bary = texel[order], face[order], bary[order]
     extra_pos = np.searchsorted(texel, extra_t).astype(np.int32)
     return UVRaster(size, texel.astype(np.int32), face.astype(np.int32), np.ascontiguousarray(bary, np.float32),
-                    added, overlaps, extra_pos, extra_f.astype(np.int32), np.ascontiguousarray(extra_b, np.float32))
+                    added, overlaps, extra_pos, extra_f.astype(np.int32), np.ascontiguousarray(extra_b, np.float32),workers)
 
 
 # --------------------------------------------------------------------------------------
@@ -401,7 +425,7 @@ def uv_vdown(context):
     return uv
 
 
-def prepare_surface(context, size):
+def prepare_surface(context, size, topology=None):
     if context.uvs is None:
         raise ValueError("This mesh has no UVs. Run 'UTX 0. UV Unwrap Mesh' before baking.")
     uv = np.asarray(context.uvs, np.float64)
@@ -416,7 +440,7 @@ def prepare_surface(context, size):
         _SURFACE_CACHE.move_to_end(key)
         return cached, True
     t0 = time.perf_counter()
-    topology = build_topology(context.vertices, context.faces, context.uvs)
+    topology = topology if topology is not None else build_topology(context.vertices, context.faces, context.uvs)
     t1 = time.perf_counter()
     raster = rasterize_uv(uv_vdown(context), context.faces, size)
     t2 = time.perf_counter()
@@ -526,6 +550,8 @@ class ViewInput:
     mask_ref: object            # ArrayRef (S,S)
     depth_ref: object           # ArrayRef (R,R) float32 linear depth, 0 = background
     transform: object = None   # optional ImageTransform; depth always stays original
+    normal_ref: object = None
+    normal_rotation: object = None
 
 
 def collect_views(collection):
@@ -536,7 +562,9 @@ def collect_views(collection):
             # only four of the diagonal rig's tiles contain actual images.
             views.append(ViewInput(f"rig{si}:{vs.plan.names[vi] if vi < len(vs.plan.names) else vi}",
                                    np.asarray(vs.plan.matrices[vi], np.float64), vs.images[vi], vs.masks[vi],
-                                   vs.gbuffer.depths[vi], vs.sampling[vi] if vs.sampling else None))
+                                   vs.gbuffer.depths[vi], vs.sampling[vi] if vs.sampling else None,
+                                   vs.gbuffer.normals[vi],np.asarray(vs.plan.rotation,np.float32).T @
+                                   GLTF_TO_BLENDER.T @ np.diag([1,1,-1]).astype(np.float32)))
     return views
 
 
@@ -656,7 +684,7 @@ def _edge_weight(depth_t, S, torch):
     return w.reshape(-1).contiguous(), dist == 0
 
 
-def prepare_view(view: ViewInput, semantic, device, detail=False, complete_mips=False, stream=False):
+def prepare_view(view: ViewInput, semantic, device, detail=False, complete_mips=False, stream=False,surface_guard=False):
     """detail=True also attaches the detail-mode data (Base Color only); fuse_views attaches it
     lazily per view instead, so the gains pass and the view cache stay as light as before."""
     torch = _torch()
@@ -741,6 +769,15 @@ def prepare_view(view: ViewInput, semantic, device, detail=False, complete_mips=
                       float(valid.mean()), transform=tr, edge_size=edge_size)
     if detail and semantic == "base_color":
         attach_detail(pv)
+    if surface_guard:
+        pv.surface_guard=True
+        if view.normal_ref is not None:
+            normal=np.asarray(view.normal_ref.read())
+            if normal.shape==(R,R,4) and view.normal_rotation is not None:
+                pv.surface_normals=torch.from_numpy(np.array(normal,np.uint8)).to(device).reshape(-1,4)
+                pv.surface_normal_rotation=torch.tensor(view.normal_rotation,dtype=torch.float32,device=device)
+        from .surfacefilter import attach
+        attach(pv,torch)
     return pv
 
 
@@ -909,6 +946,13 @@ def _project(geo, view: PreparedView, torch, detail=False, with_footprint=False,
     if view.transform is not None:
         u,v = view.transform.uv(u,v)
     sample = _sample_levels(view, u, v, lod, torch)
+    guarded=None
+    if getattr(view,'surface_guard',False):
+        from .surfacefilter import sample as guarded_sample
+        guard_E=view.edge_size or view.S
+        guard_x=(original_u*guard_E).floor().clamp(0,guard_E-1).long();guard_y=(original_v*guard_E).floor().clamp(0,guard_E-1).long()
+        hint=cos.clamp(0,1)*vis*view.edge_w[guard_y*guard_E+guard_x]
+        sample,guarded=guarded_sample(view,Pc,Ng,geo.Ns[idx],original_u,original_v,u,v,footprint,sample,torch,q_hint=hint)
     alpha = sample[:, -1]
     colour = sample[:, :-1] / alpha.clamp_min(1e-4)[:, None]
     S = view.S
@@ -926,7 +970,7 @@ def _project(geo, view: PreparedView, torch, detail=False, with_footprint=False,
         # The optional source-calibrated path keeps a small colour-base image;
         # it does not allocate full-resolution min/max or fine-band images.
         from .sharpbake import sample_source_detail
-        colour, low = sample_source_detail(view, u, v, colour, lod, q, torch)
+        colour, low = sample_source_detail(view, u, v, colour, lod, q, torch,cubic_allowed=None if guarded is None else ~guarded)
         extra_out[idx] = low
     elif detail:
         import torch.nn.functional as F
@@ -1241,7 +1285,7 @@ def surface_lowpass(surface, values, weights, iterations=3):
 def _vertex_field(surface, colour, alpha):
     """Harmonic surface fill on welded vertices. Returns (Vw,C) values + stats."""
     from scipy.sparse import diags
-    from scipy.sparse.linalg import spsolve, cg
+    from scipy.sparse.linalg import spsolve
     from scipy.sparse.csgraph import connected_components
     topo = surface.topology
     nw = topo.n_weld
@@ -1274,7 +1318,7 @@ def _vertex_field(surface, colour, alpha):
             # nearest observed vertex in 3D.
             from scipy.spatial import cKDTree
             tree = cKDTree(topo.weld_pos[K])
-            _, nn = tree.query(topo.weld_pos[U[floating]])
+            _, nn = tree.query(topo.weld_pos[U[floating]], workers=-1)
             x[U[floating]] = x[K[nn]]
             stats["floating_vertices"] = int(floating.sum())
             fixed = known.copy()
@@ -1294,11 +1338,11 @@ def _vertex_field(surface, colour, alpha):
                 sol = np.asarray(sol).reshape(U.size, C)
                 stats["solver"] = "superlu"
             else:
-                sol = np.zeros((U.size, C))
                 pre = diags(1.0 / np.maximum(deg, 1e-12))
-                for ch in range(C):
-                    sol[:, ch], _ = cg(L, rhs[:, ch], rtol=1e-6, maxiter=1500, M=pre)
+                from .cpu import solve_cg_columns
+                sol, workers = solve_cg_columns(L, rhs, pre)
                 stats["solver"] = "cg"
+                stats["independent_channel_workers"] = workers
             x[U] = sol
         stats["solved_vertices"] = int(U.size)
     return x, stats
@@ -1447,12 +1491,6 @@ def choose_device(preference="auto", estimate_bytes=0):
             pass
     except Exception:
         device = torch.device("cuda")
-    try:
-        free, _ = torch.cuda.mem_get_info(device)
-        if free < estimate_bytes * 1.2:
-            return torch.device("cpu"), f"only {free / 2**20:.0f} MiB VRAM free"
-    except Exception:
-        pass
     return device, "cuda"
 
 
@@ -1476,10 +1514,16 @@ def _estimate_bytes(n_texels, max_depth_px, max_image_px, chunk=1 << 20, detail=
 
 
 def bake_branch(surface, collection, semantic, device, completion=True, harmonize=True, timer=None,
-                detail=False, consistent=False, source_sharp=False):
+                detail=False, consistent=False, source_sharp=False, patch_guide=None, anchor=False, exact_support=False):
     """Bake one semantic ('base_color' or 'mr') from a view collection on a shared surface.
     detail=True (Base Color only) uses cubic reconstruction + a near single-camera fine band;
     visibility, confidence, coverage and completion are identical to the standard path."""
+    if anchor and semantic == 'base_color':
+        from .sourceanchor import bake
+        return bake(surface,collection,device,completion,timer,exact_support=exact_support)
+    if patch_guide is not None and semantic == 'base_color':
+        from .patchbake import bake
+        return bake(surface,collection,device,patch_guide,completion,timer)
     if source_sharp and semantic == "base_color":
         from .sharpbake import bake_source_sharp
         return bake_source_sharp(surface, collection, device, completion, harmonize, timer)
@@ -1570,14 +1614,16 @@ def bake_branch(surface, collection, semantic, device, completion=True, harmoniz
 
 
 def bake_surface_maps(albedo_setup, albedo_views, size, completion=True, mr_setup=None, mr_views=None,
-                      device_preference="auto", harmonize=True, detail=False, consistent=False, source_sharp=False):
+                      device_preference="auto", harmonize=True, detail=False, consistent=False, source_sharp=False, coherent=False, anchor=False, exact_support=False):
     """Bake Base Color (+ Roughness/Metallic) atlases. Returns (maps, coverage, report).
     detail=True applies the detail-preserving reconstruction/fusion to Base Color only;
     Roughness/Metallic always use the standard path (scalar material data)."""
     torch = _torch()
+    from .cpu import configure_cpu
+    cpu_report = configure_cpu()
     timer = StageTimer()
     context = albedo_setup.context
-    if source_sharp:
+    if source_sharp or coherent or anchor:
         # An 8K atlas and an older cached dense-mesh raster should not coexist
         # just to retain a warm cache on a 16GB machine. Keep the requested
         # surface if it already exists; MR reuses it in this same call.
@@ -1590,7 +1636,21 @@ def bake_surface_maps(albedo_setup, albedo_views, size, completion=True, mr_setu
             ram_preflight(int(size)**2*96,albedo_setup.runtime.system_headroom_mb)
     if mr_views is not None and mr_setup is not None and mr_setup.context.atlas_id != context.atlas_id:
         raise ValueError("MR setup uses a different UV layout than Albedo")
-    surface, cache_hit = prepare_surface(context, int(size))
+    patch_guide=None;borrowed_topology=None
+    if coherent:
+        from .patchbake import build_guide,cached_guide,GUIDE_SIZE
+        guide_size=min(int(size),GUIDE_SIZE)
+        patch_guide=cached_guide(context,albedo_views,guide_size,albedo_setup.runtime)
+        if patch_guide is None:
+            clear_surface_cache()
+            guide_surface,_=prepare_surface(context,guide_size)
+            guide_device,_=choose_device(device_preference,512*2**20)
+            patch_guide=build_guide(guide_surface,albedo_views,guide_device,uv_vdown(context))
+            patch_guide=cached_guide(context,albedo_views,guide_size,albedo_setup.runtime,patch_guide)
+            borrowed_topology=guide_surface.topology
+            clear_surface_cache();del guide_surface
+        timer.lap('coherent_patch_guide')
+    surface, cache_hit = prepare_surface(context, int(size),borrowed_topology)
     timer.lap("uv_raster_and_topology")
     n = surface.raster.texel.size + surface.raster.extra_face.size
     depth_px = max(int(vs.gbuffer.depths[0].shape[0]) for vs in albedo_views.sets)
@@ -1600,28 +1660,15 @@ def bake_surface_maps(albedo_setup, albedo_views, size, completion=True, mr_setu
         depth_px = max(depth_px, *(int(vs.gbuffer.depths[0].shape[0]) for vs in mr_views.sets))
         image_px = max(image_px, *(int(vs.images[0].shape[0]) for vs in mr_views.sets))
     device, device_note = choose_device(device_preference, _estimate_bytes(n, depth_px, image_px, detail=detail))
-    policy=albedo_setup.runtime
-    if device.type=='cuda' and getattr(policy,'performance_mode','original')!='original':
-        from .adaptive import snapshot,decide,MiB
-        state=snapshot(device)
-        decision=decide(state,policy)
-        estimate=_estimate_bytes(n,depth_px,image_px,detail=detail)
-        if state is not None:
-            if estimate+decision.headroom>decision.capacity:
-                device,device_note=_torch().device('cpu'),'adaptive bake budget: native CPU fallback'
-            else:
-                import comfy.model_management as mm
-                mm.free_memory(int(estimate*1.3)+decision.headroom+max(0,state.total-decision.capacity),device)
-                refreshed=decide(snapshot(device),policy)
-                if estimate*1.2>refreshed.spendable:
-                    device,device_note=_torch().device('cpu'),'adaptive bake pressure: native CPU fallback'
     timer.lap("device_select")
     report = {"stage": "fast_surface_bake", "texture_size": int(size), "device": str(device),
               "device_note": device_note, "surface_cache_hit": cache_hit,
               "occupied_texels": int(surface.raster.texel.size), "uv_charts": int(surface.topology.n_charts),
               "conservative_texels": int(surface.raster.conservative),
               "overlapping_uv_samples": int(surface.raster.extra_face.size),
-              "detail_mode": bool(detail)}
+              "raster_cpu_workers": surface.raster.cpu_workers,
+              "detail_mode": bool(detail), "cpu": cpu_report,
+              "memory_policy": "attempt_actual_allocation; no automatic CPU rerun"}
     if not cache_hit:
         report["surface_prepare_seconds"] = surface.timings
 
@@ -1629,7 +1676,7 @@ def bake_surface_maps(albedo_setup, albedo_views, size, completion=True, mr_setu
         maps = {}
         with torch.inference_mode():
             base, alpha, stats = bake_branch(surface, albedo_views, "base_color", dev, completion, harmonize, timer,
-                                             detail=detail, consistent=consistent, source_sharp=source_sharp)
+                                             detail=detail, consistent=consistent, source_sharp=source_sharp,patch_guide=patch_guide,anchor=anchor,exact_support=exact_support)
             report["base_color"] = stats
             maps["base_color"] = to_atlas(surface, base, fill_gutter=True)
             coverage = coverage_atlas(surface, alpha)
@@ -1643,19 +1690,7 @@ def bake_surface_maps(albedo_setup, albedo_views, size, completion=True, mr_setu
                 timer.lap("mr:atlas_and_gutter")
         return maps, coverage
 
-    try:
-        maps, coverage = run(device)
-    except Exception as error:  # CUDA out of memory: finish on the CPU instead of failing the graph
-        if device.type != "cuda" or "out of memory" not in str(error).lower():
-            raise
-        try:
-            torch.cuda.empty_cache()
-        except Exception:
-            pass
-        device = torch.device("cpu")
-        report["device"] = "cpu"
-        report["device_note"] = "CUDA ran out of memory; finished on CPU"
-        maps, coverage = run(device)
+    maps, coverage = run(device)
     if device.type == "cuda":
         try:
             torch.cuda.empty_cache()

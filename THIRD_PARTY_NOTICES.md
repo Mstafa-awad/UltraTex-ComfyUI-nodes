@@ -1,5 +1,12 @@
 # Third-party code and host dependencies
 
+The rc4 CPU pool controller calls the separately installed `threadpoolctl`
+3.6 API, under the BSD-3-Clause license. Commercial use is permitted under that
+license; preserve upstream notices when redistributing the dependency.
+[Upstream license](https://github.com/joblib/threadpoolctl/blob/master/LICENSE),
+[thread-pool control API](https://github.com/joblib/threadpoolctl#setting-the-maximum-size-of-thread-pools).
+No dependency source or model weights are bundled by this addition.
+
 The 2.2.0rc2 `sharp_source` branch, row-streamed preparation and native-scale enhancement control are original implementations using the existing NumPy/SciPy/PyTorch APIs, under the project's existing GPL-3.0-only terms. No MVS-Texturing/OpenMVS code, graph solver, registration library or additional checkpoint is incorporated. No model weights are redistributed. The existing Real-ESRGAN BSD-3-Clause reference remains the tested selectable upscaler; the code does not automatically substitute weights.
 
 Project-authored UltraTex Modular v2 code is offered under GNU GPL-3.0-only, subject to copyright ownership. Previously published MIT-licensed editions retain their prior grants. Vendored third-party MIT/Apache-2.0 files retain their upstream copyright/license notices; their texts are reproduced alongside the code. No model weights are redistributed.
@@ -31,6 +38,18 @@ See `component_manifest.json` and upstream model cards. The selected FLUX.2 Klei
 `core/fastbake.py`, `fast_baker.py` and the v0.4 tests/tools were written independently for this project, now distributed with the project under GPL-3.0-only; original development notes described them as MIT. They use only NumPy (BSD), SciPy (BSD), Pillow (HPND) and PyTorch (BSD-style), all already required by ComfyUI or this pack. No rasteriser library (no nvdiffrast), no AGPL/GPL code and no new model weights. The software UV rasteriser, plane-consistent visibility test, two-band fusion and surface completion are original implementations of standard techniques. They are not copies of another project's code.
 
 Test assets are generated procedurally inside the tests. No third-party meshes or textures are shipped.
+
+## View 0 anchor / coherent bake (2.2.0rc3 TEST)
+
+The new source-anchor, geometry-filter, patch-graph, metric alpha-expansion and
+bounded log-Poisson code was implemented independently under the project's
+GPL-3.0-only license. Commercial use is permitted subject to that license.
+No MVS-Texturing or third-party optimizer source/binary or model weights are
+included. Runtime operations use existing PyTorch, NumPy and SciPy dependencies;
+no package or environment upgrade is introduced. SciPy publishes BSD-3-Clause
+terms: https://github.com/scipy/scipy/blob/main/LICENSE.txt . The MVS-Texturing
+BSD-3-Clause source was researched as a reference, not integrated:
+https://github.com/nmoehrle/mvs-texturing/blob/master/LICENSE.txt .
 
 ## Fast Detail bake (v0.4.1)
 

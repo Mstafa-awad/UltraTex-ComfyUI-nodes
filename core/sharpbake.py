@@ -85,13 +85,14 @@ def attach_source_base(view):
     return view
 
 
-def sample_source_detail(view,u,v,colour,lod,q,torch):
+def sample_source_detail(view,u,v,colour,lod,q,torch,cubic_allowed=None):
     """Small base sample + bounded cubic reconstruction without full-size helper maps."""
     import torch.nn.functional as F
     grid=torch.stack((2*u-1,2*v-1),-1).view(1,1,-1,2)
     low=F.grid_sample(view.source_base,grid,mode='bilinear',padding_mode='border',align_corners=False)[0,:,0].T
     x=(u*view.S-.5).floor().long(); y=(v*view.S-.5).floor().long()
     need=(lod<=fb.DETAIL_LOD_MAX)&(q>=fb.Q_LO)&(x>=1)&(y>=1)&(x<view.S-2)&(y<view.S-2)
+    if cubic_allowed is not None:need &= cubic_allowed
     ix=need.nonzero(as_tuple=True)[0]
     if ix.numel():
         # Require the complete cubic support to be foreground, including depth

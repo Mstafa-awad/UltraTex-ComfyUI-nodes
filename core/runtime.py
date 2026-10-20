@@ -63,11 +63,10 @@ def interrupt():
 
 
 def ram_preflight(required=0, headroom_mb=2048):
-    """Reclaim this pack's cache under pressure; reserve only a bounded margin.
+    """Reclaim this pack's cache under pressure, then attempt real allocations.
 
-    Headroom is a cache-trimming target, not an extra multi-GiB allocation. Large
-    offloaded models can leave less than that target while a CPU bake still fits.
-    A second measurement after collection avoids requiring a manual queue rerun.
+    Estimates are cache-trimming hints only; they never reject an operation.
+    Actual allocator errors propagate with their original diagnostic.
     """
     global _CACHE_BYTES
     try:
@@ -76,7 +75,6 @@ def ram_preflight(required=0, headroom_mb=2048):
         return
     required = max(0, int(required))
     target = max(0, headroom_mb) * 2**20
-    reserve = min(target, max(64 * 2**20, int(required * .1)))
     available = psutil.virtual_memory().available
     if available < required + target:
         with _LOCK:
@@ -84,11 +82,8 @@ def ram_preflight(required=0, headroom_mb=2048):
             _CACHE_BYTES = 0
         gc.collect()
         available = psutil.virtual_memory().available
-    if available < required + reserve:
-        raise MemoryError(f"UltraTex: {available / 2**30:.2f} GiB system RAM available; "
-                          f"this stage needs about {required / 2**30:.2f} GiB "
-                          f"plus {reserve / 2**20:.0f} MiB margin after releasing its RAM cache. "
-                          "Reduce resolution or release inactive models.")
+    return {"available_bytes": available, "estimated_bytes": required,
+            "policy": "attempt_actual_allocation"}
 
 
 def atomic_json(path, value):
