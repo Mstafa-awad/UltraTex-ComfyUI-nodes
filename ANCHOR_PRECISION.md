@@ -1,3 +1,5 @@
+> Historical release note. Current bake presets are Fast, Quality and Quality + edge repair; see README.md.
+
 # Anchor Precision TEST, 2.2.0rc4
 
 Select `sharp_anchor_v2` in UTX 3 to test the corrected geometry guard. Keep

@@ -162,6 +162,41 @@ def _preview_reference(reference, preview_size=512):
     return torch.from_numpy(rgb[None]), torch.from_numpy(alpha[None])
 
 
+def _view_references(source, gbuffer):
+    """Fit the optional per-view pictures onto the first (0-degree) rig; ((view_index, Reference), ...)."""
+    from .core.conditions import prepare_view_reference, VIEW_PICTURE
+    result = []
+    for view_index, image, mask in getattr(source, "view_references", ()):
+        ref = prepare_view_reference(image, mask, gbuffer, view_index, source.runtime, source.mask_polarity)
+        if ref is None:
+            print(f"[UTX 1] {VIEW_PICTURE[view_index]} reference skipped: the mesh is not visible from that camera.")
+            continue
+        result.append((view_index, ref))
+    return tuple(result)
+
+
+def _preview_view_references(gbuffer, references, preview_size=512):
+    """Each placed view picture over its view's mesh normals (50/50), labelled, so wrong sides are easy to spot."""
+    from PIL import Image, ImageDraw
+    from .core.conditions import VIEW_PICTURE
+    images = []
+    for view_index, ref in references:
+        normal = np.asarray(Image.fromarray(gbuffer.normals[view_index].read()).resize((preview_size, preview_size), Image.Resampling.BILINEAR)).astype(np.float32) / 255.0
+        picture = np.asarray(Image.fromarray(ref.rgba.read()).resize((preview_size, preview_size), Image.Resampling.LANCZOS)).astype(np.float32) / 255.0
+        a_n, a_p = normal[..., 3:4], picture[..., 3:4]
+        base = normal[..., :3] * a_n + 1 - a_n
+        rgb = base * (1 - .5 * a_p) + picture[..., :3] * .5 * a_p
+        tile = Image.fromarray(np.uint8(np.clip(rgb * 255 + .5, 0, 255)))
+        t = ref.transform
+        note = ("mirrored" if t.get("mirrored") else "") + (f" turned {90 * t.get('turn', 0)} deg" if t.get("turn") else "")
+        ImageDraw.Draw(tile).text((6, 6), f"{VIEW_PICTURE[view_index]}{' - ' + note.strip() if note.strip() else ''}"
+                                  f"  fit {t.get('silhouette_iou', 0):.2f}", fill=(200, 0, 0))
+        images.append(torch.from_numpy(np.asarray(tile, np.float32)[None] / 255.0))
+    if not images:
+        return torch.ones((1, 64, 64, 3))
+    return torch.cat(images, dim=0)
+
+
 @dataclass(frozen=True)
 class PreparedSource:
     """Prepared mesh + original reference, without baked-in view resolution/count.
@@ -183,6 +218,9 @@ class PreparedSource:
     image_margin_percent: float = 2.0
     image_padding_pixels: int = 8
     reference_zoom: float = 1.0
+    # Optional pictures for other views: ((view_index, IMAGE, MASK or None), ...); see conditions.EXTRA_VIEWS.
+    view_references: tuple = ()
+    view_reference_strength: float = 0.5
 
     def _comfy_cache_tensors(self):
         return self.context._comfy_cache_tensors()
@@ -193,7 +231,8 @@ def prepare_source(mesh, image, mask=None, alignment="front", mask_polarity="bac
     import folder_paths
     from .core.geometry import prepare_geometry
 
-    runtime = runtime or RuntimePolicy(str(Path(folder_paths.get_output_directory()) / '.ultratex_cache'))
+    from .core.runtime import default_spill_directory
+    runtime = runtime or RuntimePolicy(str(default_spill_directory(folder_paths.get_output_directory())))
     prepared_mesh = mesh
     context, _ = prepare_geometry(prepared_mesh, policy=runtime, normal_mode=normal_mode)
     if context.uvs is None:
@@ -381,7 +420,8 @@ def setup_for_generation(source, resolution, view_count, framing="auto_fit_94"):
         reference = prepare_reference(source.reference_image, source.reference_mask,
                                       gbuffers[0], source.runtime,
                                       source.mask_polarity, source.alignment)
-        return TextureSetup(source.context, tuple(gbuffers), reference, source.runtime)
+        return TextureSetup(source.context, tuple(gbuffers), reference, source.runtime,
+                            _view_references(source, gbuffers[0]), float(getattr(source, "view_reference_strength", .5)))
 
     from .core.contracts import GBuffer
     actual = int(getattr(source,"normal_resolution",prepared.plan.render_size))
@@ -409,7 +449,25 @@ def setup_for_generation(source, resolution, view_count, framing="auto_fit_94"):
     reference=prepare_reference(source.reference_image,source.reference_mask,
                                 first,source.runtime,source.mask_polarity,source.alignment)
     reference=_utx1_zoom_aligned_ref(reference,source.reference_zoom,source.runtime)
-    return TextureSetup(source.context,tuple(gbuffers),reference,source.runtime)
+    return TextureSetup(source.context,tuple(gbuffers),reference,source.runtime,_view_references(source,first),
+                        float(getattr(source,"view_reference_strength",.5)))
+
+
+_VIEW_REFERENCE_TIPS = {
+    "back": "Optional picture of the character seen from behind (its right arm on the picture's right).",
+    "character_left_side": "Optional picture of the character's OWN left side (the side that is on the right of the front "
+                           "picture; the character faces left in it). A picture facing the other way is mirrored automatically.",
+    "character_right_side": "Optional picture of the character's OWN right side (the side that is on the left of the front "
+                            "picture; the character faces right in it). A picture facing the other way is mirrored automatically.",
+    "top": "Optional picture seen from above. It is turned/mirrored automatically to fit the mesh.",
+    "bottom": "Optional picture seen from below. It is turned/mirrored automatically to fit the mesh.",
+}
+_VIEW_REFERENCE_INPUTS = [item for name, tip in _VIEW_REFERENCE_TIPS.items() for item in (
+    io.Image.Input(f"reference_{name}", optional=True,
+                   tooltip=tip + " It is fitted onto that view of the mesh only (never the front); FLUX starts that view from it."),
+    io.Mask.Input(f"mask_{name}", optional=True,
+                  tooltip=f"Optional mask for reference_{name} (same polarity setting as the main mask). Without it, "
+                          "the alpha channel or a plain background colour is used."))]
 
 
 class PrepareTexture(io.ComfyNode):
@@ -432,13 +490,19 @@ class PrepareTexture(io.ComfyNode):
                     tooltip="Custom camera fit only: extra pixel safety border EACH image side; not UV padding."),
                 io.Float.Input("reference_zoom", default=1.0, min=0.5, max=1.5, step=0.05,
                     tooltip="Optional aligned reference+mask zoom together (default 1.0 unchanged)."),
+                io.Float.Input("view_reference_strength", default=0.5, min=0.0, max=1.0, step=0.05, optional=True,
+                    tooltip="Only used with reference_back / _side / _top / _bottom pictures: share of the first-pass steps a "
+                            "view is held to its picture. 0.5 keeps its colours and big patterns while FLUX redraws the fine "
+                            "detail on the mesh; higher copies the picture more literally (and any misfit with the mesh)."),
                 io.Mask.Input("mask", optional=True), POLICY.Input("runtime", optional=True),
+                *_VIEW_REFERENCE_INPUTS,
             ], [
                 SOURCE.Output(display_name="prepared_source"),
                 io.Mesh.Output(display_name="prepared_mesh"),
                 io.Image.Output(display_name="normal_views_512"),
                 io.Image.Output(display_name="aligned_reference_512"),
                 io.Mask.Output(display_name="aligned_mask_512"),
+                io.Image.Output(display_name="view_references_512"),
             ], "Mesh normals/depth, reference and camera fitting ONLY. UTX 2 sampling/VRAM code remains v0.4.2."
         )
 
@@ -446,8 +510,10 @@ class PrepareTexture(io.ComfyNode):
     def execute(cls, mesh, reference, alignment, mask_polarity,
                 normal_mode="auto_smooth", normal_view_resolution=1024,
                 camera_fit="native_mesh_fit", image_margin_percent=2.0,
-                image_padding_pixels=8, reference_zoom=1.0, mask=None, runtime=None):
+                image_padding_pixels=8, reference_zoom=1.0, mask=None, runtime=None, view_reference_strength=0.5,
+                **view_inputs):
         from .core.render import render_gbuffers
+        from .core.conditions import EXTRA_VIEWS
         from .core.conditions import prepare_reference
         from .core.contracts import GBuffer
         source = prepare_source(mesh, reference, mask, alignment, mask_polarity, runtime, normal_mode)
@@ -460,7 +526,11 @@ class PrepareTexture(io.ComfyNode):
         # Disk-backed buffers: no new resident model or GPU activations.
         source=replace(source, normal_gbuffer=gb, normal_resolution=size,
                        camera_fit=camera_fit,image_margin_percent=float(image_margin_percent),
-                       image_padding_pixels=int(image_padding_pixels),reference_zoom=float(reference_zoom))
+                       image_padding_pixels=int(image_padding_pixels),reference_zoom=float(reference_zoom),
+                       view_reference_strength=float(view_reference_strength),
+                       view_references=tuple((index, view_inputs[f"reference_{name}"], view_inputs.get(f"mask_{name}"))
+                                             for name, index in EXTRA_VIEWS.items()
+                                             if view_inputs.get(f"reference_{name}") is not None))
         print(f"[UTX 1] Camera fit={camera_fit}, normals={size}px, "
               "RGB/Depth/Mask stored; UTX 2 retains original v0.4.2 sampler.")
         # Preview is only a downsample of already-rendered REAL mesh normals.
@@ -469,8 +539,15 @@ class PrepareTexture(io.ComfyNode):
         ref=prepare_reference(source.reference_image,source.reference_mask,
                               preview_gb,source.runtime,source.mask_polarity,source.alignment)
         ref=_utx1_zoom_aligned_ref(ref,source.reference_zoom,source.runtime)
+        views=_view_references(source,preview_gb)
+        from .core.conditions import VIEW_PICTURE
+        for view_index,view_ref in views:
+            t=view_ref.transform
+            changes=(["mirrored"] if t["mirrored"] else [])+([f"turned {90*t['turn']} degrees"] if t["turn"] else [])
+            print(f"[UTX 1] {VIEW_PICTURE[view_index]} reference placed on its view"
+                  f"{' (' + ', '.join(changes) + ' to match the mesh)' if changes else ''}; silhouette fit {t['silhouette_iou']:.2f}")
         return io.NodeOutput(source,source.context.mesh,_preview_normals(gb,512),
-                             *_preview_reference(ref,512))
+                             *_preview_reference(ref,512),_preview_view_references(gb,views,512))
 
 
 class GenerateTextureViews(io.ComfyNode):
@@ -506,6 +583,15 @@ class GenerateTextureViews(io.ComfyNode):
                     tooltip="Separate iteration budget for the 45-degree pass."),
                 io.Boolean.Input("tiled_decode", default=True,
                     tooltip="Tiled VAE for limited VRAM. Disable only if the VAE can decode without OOM."),
+                io.Float.Input("refine_denoise", default=0.0, min=0.0, max=0.9, step=0.05,
+                    tooltip="0 = off. Otherwise, after generation the views are baked once, re-rendered from that single texture and "
+                            "generated again at this denoise, so every view starts from the same paint. Costs a short extra pass; "
+                            "removes most view-to-view disagreement (albedo only)."),
+                io.Int.Input("refine_steps", default=4, min=1, max=100,
+                    tooltip="Step budget of the refine pass; only the steps below refine_denoise run (4 steps at 0.35 runs one sampler step, which measured as good as two)."),
+                io.Boolean.Input("fast_decode", default=False, optional=True,
+                    tooltip="Decode each view once instead of averaging three tile layouts: about 3x faster VAE decode (~10 s less per 2048 view). "
+                            "Measured: same sharpness and colour, no seams; fine texture-level differences only."),
                 io.Conditioning.Input("negative", optional=True),
             ],
             [VIEWS.Output(), io.Image.Output(display_name="all_views_512"), io.Image.Output(display_name="contact_sheet"),
@@ -552,6 +638,9 @@ class GenerateTextureViews(io.ComfyNode):
         extra_denoise=0.55,
         extra_steps=16,
         tiled_decode=True,
+        refine_denoise=0.0,
+        refine_steps=4,
+        fast_decode=False,
         negative=None,
     ):
         import folder_paths
@@ -586,11 +675,24 @@ class GenerateTextureViews(io.ComfyNode):
         patched, _, _ = _diag_stage("UTX2.attach_lora", apply_lora, model, path, task, float(lora_strength))
 
         first = setup.gbuffers[0]
-        conditions, _ = _diag_stage("UTX2.first_pass.vae_encode", encode_conditions, vae, setup.reference, first, policy)
-        pack, _ = _diag_stage("UTX2.first_pass.build_tokens", build_tokens, conditions, policy)
+        from .core.conditions import view_pictures_for
+        view_refs = view_pictures_for(setup, task)
+        if view_refs:
+            # Views with their own picture start from it and are held to it for the first steps, then FLUX finishes them
+            # on the mesh normals together with the other views (same mechanism as the guided 45-degree pass).
+            from .core.conditions import view_reference_init
+            start, hold = view_reference_init(first, view_refs)
+            conditions, _ = _diag_stage("UTX2.first_pass.vae_encode", encode_conditions, vae, setup.reference, first, policy,
+                                        init_images=start, keep_masks=hold)
+            keep_steps = max(0, min(int(steps), round(float(getattr(setup, "view_reference_strength", .5)) * int(steps))))
+            del start, hold
+        else:
+            conditions, _ = _diag_stage("UTX2.first_pass.vae_encode", encode_conditions, vae, setup.reference, first, policy)
+            keep_steps = -1
+        pack, _ = _diag_stage("UTX2.first_pass.build_tokens", build_tokens, conditions, policy, keep_steps)
         workset = _diag_stage("UTX2.first_pass.build_workset", build_workset, pack, positive, negative, int(seed), 1, task, policy)
         samples, _ = _diag_stage("UTX2.first_pass.sampling", sample_workset, patched, workset, policy, int(steps), float(guidance), float(denoise), "sparse", float(sparse_retention))
-        collection, _ = _diag_stage("UTX2.first_pass.vae_decode", decode_views, decoder, samples, policy, bool(tiled_decode))
+        collection, _ = _diag_stage("UTX2.first_pass.vae_decode", decode_views, decoder, samples, policy, bool(tiled_decode), bool(fast_decode))
         del samples, workset, pack, conditions
 
         if len(setup.gbuffers) == 2:
@@ -624,9 +726,14 @@ class GenerateTextureViews(io.ComfyNode):
             second_samples, _ = _diag_stage("UTX2.second_pass.sampling", sample_workset,
                 patched, second_workset, policy, actual_steps, float(guidance), actual_denoise, "sparse", float(sparse_retention)
             )
-            rotated, _ = _diag_stage("UTX2.second_pass.vae_decode", decode_views, decoder, second_samples, policy, bool(tiled_decode))
+            rotated, _ = _diag_stage("UTX2.second_pass.vae_decode", decode_views, decoder, second_samples, policy, bool(tiled_decode), bool(fast_decode))
             collection = ViewCollection(collection.sets + rotated.sets)
             del second_conditions, second_pack, second_workset, second_samples, rotated
+
+        if float(refine_denoise) > 0 and task == "albedo":
+            collection = _refine_pass(setup, collection, patched, vae, decoder, positive, negative, policy, int(seed),
+                                      int(refine_steps), float(guidance), float(refine_denoise), float(sparse_retention),
+                                      bool(tiled_decode), bool(fast_decode))
 
         batches = []
         labels = []
@@ -636,6 +743,72 @@ class GenerateTextureViews(io.ComfyNode):
             labels.extend(f"{'0' if i == 0 else '45'} deg - {views.plan.names[vi]}" for vi in active)
         images = _diag_stage("UTX2.output_prep", torch.cat, batches)
         return io.NodeOutput(collection, images, _diag_stage("UTX2.contact_sheet", contact_sheet, images, labels), setup)
+
+
+def _refine_pass(setup, collection, patched, vae, decoder, positive, negative, policy, seed, steps, guidance,
+                 denoise, retention, tiled, single_layout=False):
+    """Generate every view again from ONE texture so the cameras agree.
+
+    Independently generated views paint the same surface differently (measured 22-27 dB view-to-view PSNR, against ~41 dB
+    for a real texture; 33 dB after this pass). The first bake of all views is re-rendered into each calibrated rig,
+    encoded, partially noised and denoised again; the refined views then bake into the final atlas.
+    """
+    from .core import fastbake as fb
+    from .core.conditions import encode_conditions, build_tokens, build_workset
+    from .core.decode import decode_views
+    from .core.guidance import reproject_atlas
+    from .core.sampling import sample_workset
+    from .core.contracts import ViewCollection
+    from .core.refine import match_low_frequency
+    from .core.runtime import Store
+    import logging, time
+    from collections import Counter
+    seconds, mark = Counter(), [time.perf_counter()]
+
+    def lap(stage):
+        now = time.perf_counter()
+        seconds[stage] += now - mark[0]
+        mark[0] = now
+    # Guide bake at 2048; the baker frees VRAM from ComfyUI first and runs on CPU if there is no CUDA.
+    # The guide is a Quality bake (edge repair, exact filter support): measured on real views it leaves less rim
+    # speckle in the refined views than a Fast bake, and 12 % instead of 15 % of texels end up unobserved.
+    maps, _, _ = _diag_stage("UTX2.refine.bake_guide", fb.bake_surface_maps, setup, collection, 2048, True,
+                             device_preference="auto", anchor=True, anchor_fast=False, exact_support=True, edge_margin=8)
+    atlas = np.ascontiguousarray(maps["base_color"], dtype=np.float32)
+    full = np.ones(atlas.shape[:2], np.float32)
+    lap("guide")
+    refined = []
+    for i, gbuffer in enumerate(setup.gbuffers):
+        initial, _ = _diag_stage(f"UTX2.refine.reproject_{i}", reproject_atlas, setup.context, gbuffer, atlas, full, full, 0.0)
+        lap("reproject")
+        conditions, _ = _diag_stage(f"UTX2.refine.vae_encode_{i}", encode_conditions, vae, setup.reference, gbuffer, policy,
+                                    init_images=initial)
+        lap("encode")
+        pack, _ = _diag_stage(f"UTX2.refine.build_tokens_{i}", build_tokens, conditions, policy)
+        workset = _diag_stage(f"UTX2.refine.build_workset_{i}", build_workset, pack, positive, negative,
+                              (seed + 2 + i) % (2 ** 63), 1, "albedo", policy)
+        samples, _ = _diag_stage(f"UTX2.refine.sampling_{i}", sample_workset, patched, workset, policy, steps, guidance,
+                                 denoise, "sparse", retention)
+        lap("sampling")
+        views, _ = _diag_stage(f"UTX2.refine.vae_decode_{i}", decode_views, decoder, samples, policy, tiled, single_layout)
+        lap("decode")
+        store = Store(policy)
+        for vs in views.sets:
+            images = list(vs.images)
+            for vi in getattr(vs.plan, "active_indices", range(len(images))):
+                if i == 0 and vi == 0:
+                    # The anchor view carries the reference's own details (eyes, lashes, markings); the bake trusts it
+                    # as it is, and the other views are refined towards a guide that already contains it.
+                    images[vi] = collection.sets[0].images[0]
+                    continue
+                images[vi] = store.put(match_low_frequency(np.asarray(images[vi].read()), initial[vi],
+                                                           np.asarray(vs.masks[vi].read()) > 0.5))
+            refined.append(replace(vs, images=tuple(images)))
+        lap("colour anchor")
+        del initial, conditions, pack, workset, samples, views
+    logging.getLogger("UltraTex").info("[UTX refine] %.0f s (%s)", sum(seconds.values()),
+                                       ", ".join(f"{k} {v:.0f} s" for k, v in seconds.items()))
+    return ViewCollection(tuple(refined))
 
 
 def validate_bake_branch(setup, views, task):

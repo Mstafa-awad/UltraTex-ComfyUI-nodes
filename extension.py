@@ -58,7 +58,7 @@ class ConfigureRuntime(io.ComfyNode):
     @classmethod
     def define_schema(cls):
         return schema("UTXConfigureRuntime","Configure Runtime",[
-            io.String.Input("spill_directory",default="",tooltip="Blank: ComfyUI output/.ultratex_cache. Persistent intermediates; clear manually when no graph references them."),
+            io.String.Input("spill_directory",default="",tooltip="Blank: a per-session folder in output/.ultratex_cache, deleted when ComfyUI exits. A path here keeps intermediates across sessions (clear it yourself)."),
             io.Int.Input("ram_cache_mb",default=256,min=0,max=2048,step=64),
             io.Float.Input("disk_budget_gb",default=16.,min=1.,max=1024.),
             io.Int.Input("system_headroom_mb",default=2048,min=256,max=16384,step=256,tooltip="RAM-cache trimming target, not a required extra 2 GiB allocation."),
@@ -75,8 +75,8 @@ class ConfigureRuntime(io.ComfyNode):
     @classmethod
     def execute(cls,spill_directory,ram_cache_mb,disk_budget_gb,system_headroom_mb,gpu_headroom_mb,token_chunk,activation_factor,atlas_tile,decode_tile,performance_mode='adaptive',max_vram_mb=0,adaptive_diagnostics=False):
         import folder_paths
-        from .core.runtime import Store
-        directory=spill_directory.strip() or str(Path(folder_paths.get_output_directory())/".ultratex_cache")
+        from .core.runtime import Store,default_spill_directory
+        directory=spill_directory.strip() or str(default_spill_directory(folder_paths.get_output_directory()))
         policy=c.RuntimePolicy(str(Path(directory).resolve()),ram_cache_mb,disk_budget_gb,system_headroom_mb,
                                gpu_headroom_mb,token_chunk,activation_factor,int(atlas_tile),int(decode_tile),performance_mode,int(max_vram_mb),bool(adaptive_diagnostics))
         store=Store(policy)

@@ -119,16 +119,22 @@
     "original_camera_generation_and_mr_code_preserved": true
   },
   "current_test_release": {
-    "version": "2.2.0rc4",
-    "date": "2026-10-20",
-    "test_mode": "sharp_anchor_v2",
-    "rollback_mode": "sharp_anchor",
+    "version": "2.3.0rc2",
+    "date": "2026-10-21",
+    "test_mode": "Quality",
+    "rollback_mode": "restore complete 2.3.0rc1 backup",
     "new_model": false,
-    "new_dependency": {"name": "threadpoolctl", "version_tested": "3.6.0", "license": "BSD-3-Clause", "already_installed_on_test_host": true},
-    "fix": "exact source-pixel filter support for geometry edge guard",
+    "new_dependency": false,
+    "fix": "Constrain unsupported enhanced chroma near geometric boundaries using same-camera surface support and independent calibrated cameras; preserve enhanced mean brightness and anchor geometry",
     "cpu": "all logical CPU math threads; ordered bounded raster jobs; shared-matrix independent colour solves; all-worker nearest-neighbour queries",
     "cpu_parallel_rollback": "UTX_CPU_PARALLEL=0",
     "memory_policy": "no predicted RAM/VRAM refusals or automatic baker CPU redirection; actual allocation errors propagate",
-    "retained_checks": "geometry visibility, numerical compatibility, input/UV validation, disk space and spill quota"
+    "retained_checks": "geometry visibility, numerical compatibility, input/UV validation, disk space and spill quota",
+    "supported_bake_presets": [
+      "Fast",
+      "Quality"
+    ],
+    "retired_public_bake_modes_migrated": true,
+    "retired_vosr2_backend_removed": true
   }
 }

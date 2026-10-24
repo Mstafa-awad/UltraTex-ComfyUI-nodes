@@ -17,6 +17,29 @@ def parallel_workers():
     return getattr(os, 'process_cpu_count', os.cpu_count)() or 1
 
 
+def ordered_map(function, items, max_workers=6):
+    """Yield function(item) in input order, running a bounded number of items concurrently.
+
+    For NumPy-heavy blocks that release the GIL. At most 2*workers results exist at once, so the
+    look-ahead stays small even for large blocks.
+    """
+    from collections import deque
+    from concurrent.futures import ThreadPoolExecutor
+    workers = min(parallel_workers(), max_workers)
+    if workers <= 1:
+        for item in items:
+            yield function(item)
+        return
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        pending = deque()
+        for item in items:
+            pending.append(pool.submit(function, item))
+            if len(pending) >= 2 * workers:
+                yield pending.popleft().result()
+        while pending:
+            yield pending.popleft().result()
+
+
 def solve_cg_columns(matrix, rhs, preconditioner):
     """Solve independent colour channels against one shared sparse matrix.
 

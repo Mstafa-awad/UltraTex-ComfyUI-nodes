@@ -1,19 +1,17 @@
 <div align="center">
 
-# UltraTex Modular · v2
+# UltraTex Modular
 
 ### Local 3D texture generation for ComfyUI
 
-**High-detail multi-view texturing · Native MESH workflow · GPU-aware execution · Fast UV baking**
+**Multi-view FLUX.2 texturing · RealESR-enhanced views · 8K UV baking · Metallic/roughness · Textured GLB**
 
-[![Version](https://img.shields.io/badge/version-2.2.0rc2-2563eb?style=for-the-badge)](SHARP_SOURCE.md)
+[![Version](https://img.shields.io/badge/version-2.3.8rc1-2563eb?style=for-the-badge)](#whats-in-this-version)
 [![License](https://img.shields.io/badge/code-GPL--3.0-blue?style=for-the-badge)](#license-and-contributing)
 [![ComfyUI](https://img.shields.io/badge/platform-ComfyUI-111827?style=for-the-badge)](#installation)
 [![Runs locally](https://img.shields.io/badge/inference-local-16a34a?style=for-the-badge)](#requirements)
 
 **Free source code. No hosted service, subscription, or bundled model weights.**
-
-**New optional bake TEST:** [sharp_source, native RealESR pixels and true 8K atlas](SHARP_SOURCE.md). Existing bake modes and generation settings remain available.
 
 Created and maintained as a community project by [MostAadTech](https://github.com/Mstafa-awad).
 
@@ -23,236 +21,260 @@ Created and maintained as a community project by [MostAadTech](https://github.co
 
 ## What is UltraTex Modular?
 
-UltraTex Modular is a node-based system for converting a 3D mesh and reference image into detailed multi-view texture evidence and a baked, UV-mapped asset. It integrates the official **UltraTex FLUX.2 Klein base 9B** adapters with a ComfyUI-native mesh pipeline. Materials can be assembled into a usable textured GLB without leaving ComfyUI.
+UltraTex Modular turns a 3D mesh and one reference image into a textured, UV-mapped GLB inside ComfyUI. It uses the
+official **UltraTex FLUX.2 Klein base 9B** adapters to paint the model from 10 cameras, sharpens the views with a
+RealESR upscaler, and bakes them into a texture atlas of up to **8192 × 8192** together with a metallic/roughness map.
 
 ```mermaid
 flowchart LR
-    M[3D Mesh] --> U[UTX 0 · UV / Geometry]
-    R[Reference image] --> A[UTX 1 · Camera & Conditions]
-    U --> A
-    A --> V[UTX 2 · Generate 6 / 10 / 12 views]
-    V --> B[UTX 3 · Fast Surface Texture Baker]
-    B --> X[BaseColor / MR / Textured GLB]
+    M[3D Mesh] --> L[UTX 0 · Load Mesh / UV Unwrap]
+    R[Reference image<br/>+ optional back / side / top / bottom pictures] --> P[UTX 1 · Prepare Mesh + Reference]
+    L --> P
+    P --> A[UTX 2 · Generate Views<br/>albedo: 10 views]
+    P --> MR[UTX 2 · Generate Views<br/>MR: 6 views]
+    A --> E[UTX 2.5 · Intelligent View Enhancer<br/>RealESR]
+    E --> B[UTX 3 · Fast Surface Texture Baker<br/>up to 8K]
+    MR --> B
+    B --> C[UTX 4 · Cache Cleaner]
+    C --> G[Textured GLB]
 ```
 
-**Everything runs on your computer.** Download model weights separately from their original publishers. The standard pipeline does not upload your meshes or references to a hosted UltraTex service.
+**Everything runs on your computer.** Download the model weights from their original publishers. Your meshes and
+references are never uploaded anywhere.
 
-## What's new in v2
+## What's in this version
 
-| Area | What v2 provides |
+| Area | What you get |
 |---|---|
-| **Speed & memory** | Streamed GGUF MLP, tiled LoRA handling, Q/K temporary-buffer improvements, adaptive GPU-budget planning, and optional faster full-context VAE research mode |
-| **Multi-view generation** | Six canonical views + four guided diagonal views (**10 real views**, not 12 with two hidden); legacy 6/12-view choices remain |
-| **Texture reconstruction** | Coverage-aware baking, visibility/depth checks, hole completion/inpainting-oriented surface fill, and detailed fast bake |
-| **Low-resolution workflows** | 1024 view generation remains supported with the improved multi-view fusion and baking controls; use UV resolution independently from generation resolution |
-| **Modular outputs** | Separate BaseColor, metallic/roughness-related outputs, MESH inputs, and a native textured GLB export path |
-| **New in this package** | **UTX 0. Load Mesh (v2)** — GLB, glTF, OBJ, PLY, STL, OFF, 3MF; FBX/DAE through optional Blender; a `copy_uvs` checkbox |
-| **Project cleanup** | One installable node pack, without old workflow JSONs, generated caches, obsolete setup notes, or benchmark debris |
+| **8K textures** | `UTX 2.5 Intelligent View Enhancer` upscales the generated views with a ComfyUI upscale model (tested: Real-ESRGAN `realesr-general-x4v3`) at its native scale, cropped to the model; `UTX 3` bakes them into a 4096 or 8192 atlas. |
+| **Bake quality** | `bake_quality = Quality` keeps the source pixels of the best camera (the front view is the anchor) with exact texel support, so thin details (hat bands, buttons, rings, braids) stay sharp. Side and 45° cameras take over where the front sees the surface at a steep angle, but only with colours the other cameras agree on. `Fast` is for previews; `Quality + edge repair` also recolours pixels at geometric edges (removes some silhouette fringes, blurs thin parts, slower). |
+| **10 real views** | Six canonical views + four guided 45° views. |
+| **Multi-view pictures (optional)** | Give your own back, left side, right side, top or bottom picture. Each picture is fitted onto its own camera only (side pictures facing the wrong way are mirrored automatically), FLUX starts that view from it and the other views follow. Pictures guide the colour only; the metallic/roughness pass ignores them. |
+| **Metallic / roughness** | A separate MR pass (UltraTex MR LoRA) is baked into the GLB's metallic-roughness texture (G = roughness, B = metallic). |
+| **Reliability** | Every VAE encode is checked twice. This catches a rare corrupted encode from ComfyUI's dynamic-VRAM VAE that used to turn a view grey and stay cached for the whole session. |
+| **Speed options** | `fast_decode` decodes each view with one tile layout instead of three (~3× faster decoding, same colours). `refine_denoise` repaints all views from one shared texture for better agreement between views (~+5 min). Both are off by default. |
+| **Disk** | Intermediate data lives in a per-session cache that is removed when ComfyUI closes. With `UTX 4 Cache Cleaner` at the end of the graph, a run leaves only the GLB on disk. |
+| **Mesh input** | `UTX 0. Load Mesh (v2)`: GLB, glTF, OBJ, PLY, STL, OFF, 3MF; FBX/DAE through an optional Blender. |
 
-### Tested performance — what the numbers really mean
-
-These measurements compare the **experimental full-context VAE mode** with the **normal tiled decoder**, using the same FLUX model and view-resolution settings. They are not universal performance guarantees.
-
-| Experiment | Normal tiled | Full-context experimental | Result |
-|---|---:|---:|---|
-| Character · first matched run | 609.98 s | 511.36 s | **16.2% shorter runtime** |
-| Deer · combined candidate | 488.34 s | 366.48 s | **25.0% shorter runtime**; GPU dedicated peak **+64 MiB** |
-| Deer · final native-storage isolation | 488.34 s | 375.18 s | **23.2% shorter runtime** in one diagnostic run |
-| One 2048 VAE view | ~13.7 s | ~3.8 s | **~3.6× faster decoding** in an isolated benchmark |
-
-The experimental decoder is **OFF by default**. It changes full-image normalization/attention context, so colors and fine image details **can differ** from the tiled path. Repeatability and quality across models/scenes are **not certified**. Do not present these figures as certified v2 default-mode speedups or as proof of visually identical output.
-
-### Quality and inpainting
-
-The baker combines views using geometric visibility information and coverage-aware reconstruction. It is designed to reduce missed texels, seams, and weak projection areas; it provides `fast_detail` and `off_direct` strategies and configurable surface filling. **Inpainting and low-resolution output quality depend on visibility, the generated views, UV layout, mesh topology and settings.** Improvements are architectural capabilities, not a promise that every 1024 asset will beat every older release. Inspect 1:1 texture details and the final model.
+Measured on an RTX 5050 Laptop GPU (8 GB) with the included 8K workflow (10 albedo views at 2048, 6 MR views at 1536,
+4 steps, RealESR, 8K Quality bake): **about 15–18 minutes per model**, of which the 8K bake takes about 2 minutes.
 
 ---
 
 ## Requirements
 
-- **ComfyUI** with support for the V3 custom-node interface and native `MESH` sockets.
-- **NVIDIA GPU** with compatible CUDA/PyTorch and the GGUF + Triton/SLA dependencies.
+- **ComfyUI** with the V3 custom-node interface and native `MESH` sockets.
+- **NVIDIA GPU** with a working CUDA PyTorch, plus Triton for sparse attention.
 - **[ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF)** installed separately.
-- Python **3.11+** (the Windows development system used Python 3.12.10).
-- Recommended tested environment: **PyTorch 2.8.0+cu128, CUDA 12.8, ComfyUI 0.39.2**, Windows, RTX 5050 Laptop 8GB. No CUDA 13 upgrade is required by this project's tested path.
-- The Python packages from `requirements.txt`, including `trimesh` for the new mesh loader.
-
-**GPU-size expectations:** RTX 5050 8GB has direct test evidence. A restricted budget on an 8GB card ran one complete workload below ~5.8GiB sampled dedicated memory, but **real 6GB GPUs have not been tested** and some 2048 tasks may be refused when memory is insufficient. 16GB+ uses adaptive native residency when available; speed gains on real 16GB hardware have not been measured. A GPU's advertised capacity alone does not guarantee that a workflow will fit.
+- Python **3.11+**.
+- Tested: **Windows, PyTorch 2.8.0+cu128, CUDA 12.8, Python 3.12, RTX 5050 Laptop 8 GB**. Larger GPUs work; real 6 GB
+  GPUs have not been tested and some 2048 settings may not fit.
+- The Python packages in `requirements.txt`.
 
 ## Installation
 
-### Option A — ZIP (easiest)
+### Option A — git clone
 
-1. Download this repository's **release ZIP**.
-2. Stop ComfyUI.
-3. Extract it so the directory structure is exactly:
+```powershell
+cd C:\path\to\ComfyUI\custom_nodes
+git clone https://github.com/Mstafa-awad/UltraTex-ComfyUI-nodes
+```
+
+### Option B — ZIP
+
+1. Stop ComfyUI.
+2. Download the repository ZIP (`Code → Download ZIP`) and extract it into `ComfyUI/custom_nodes/`, so that
+   `__init__.py` sits directly inside the extracted folder:
 
 ```text
 ComfyUI/
 └── custom_nodes/
-    └── comfyui_ultratex_modular/
+    └── UltraTex-ComfyUI-nodes/
         ├── __init__.py
-        ├── extension.py
-        ├── mesh_loader_v2.py
-        ├── README.md
-        ├── LICENSE
+        ├── simple.py
+        ├── fast_baker.py
+        ├── core/
         └── ...
 ```
 
-> **Important:** Put the **extracted folder**, not the `.zip` archive itself, in `custom_nodes`. Avoid nesting `comfyui_ultratex_modular/comfyui_ultratex_modular` and don't keep two active copies. Back up the previous version **outside** `custom_nodes` first.
+> Keep only **one** copy of the pack in `custom_nodes` (move older versions outside the folder, don't just rename them).
 
-4. Install dependencies using **ComfyUI's Python**, not an unrelated system installation:
+### Then
 
-```powershell
-# Example from the ComfyUI-Easy-Install root (Windows)
-.\python_embeded\python.exe -m pip install -r .\ComfyUI\custom_nodes\comfyui_ultratex_modular\requirements.txt
-```
-
-5. Install [ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF) if it is not present; follow its own setup instructions. Keep the working PyTorch/CUDA/Triton combination unless you intentionally validate another.
-6. Download the models listed [below](#models-and-lora-downloads).
-7. Restart ComfyUI and search for **`UTX`** nodes.
-
-### Option B — GitHub clone
-
-Clone **the published UltraTex v2 repository URL** directly into `ComfyUI/custom_nodes`. Once the repository is published, replace `<YOUR-ULTRATEX-V2-REPOSITORY-URL>` with its real URL:
+1. Install the requirements with **ComfyUI's own Python**:
 
 ```powershell
-cd C:\path\to\ComfyUI\custom_nodes
-git clone <YOUR-ULTRATEX-V2-REPOSITORY-URL> comfyui_ultratex_modular
+# Example for ComfyUI-Easy-Install / portable builds (Windows)
+.\python_embeded\python.exe -m pip install -r .\ComfyUI\custom_nodes\UltraTex-ComfyUI-nodes\requirements.txt
 ```
 
-Then install requirements and weights as described above. **The GitHub v2 URL has not been supplied yet; the placeholder is intentional.** The official [UltraTex research repository](https://github.com/yiboz2001/UltraTex) is a different upstream project, not this custom-node ZIP.
+2. Install [ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF) if it is not present.
+3. Download the models below.
+4. Restart ComfyUI, refresh the browser and search for **`UTX`**.
 
 ---
 
 ## Models and LoRA downloads
 
-**The ZIP contains no trained models.** Keep their original file formats and copy/rename to the locations shown. All links are official upstream pages or a specifically identified GGUF publisher, not rehosted weight files.
+**No model weights are included.** Download them from the original publishers and save them as shown.
 
 | Item | Source | Save inside `ComfyUI/models/` |
 |---|---|---|
-| **FLUX.2 Klein base 9B Q4_0 GGUF** | [Unsloth GGUF — exact 9B Q4_0 file](https://huggingface.co/unsloth/FLUX.2-klein-base-9B-GGUF/blob/main/flux-2-klein-base-9b-Q4_0.gguf) | `diffusion_models/flux-2-klein-base-9b-Q4_0.gguf` |
-| **Qwen3-8B Q6_K GGUF** | [Unsloth Qwen3-8B Q6_K file](https://huggingface.co/unsloth/Qwen3-8B-GGUF/blob/main/Qwen3-8B-Q6_K.gguf) | `text_encoders/Qwen3-8B-Q6_K.gguf` |
-| **FLUX.2 VAE** | [BFL FLUX.2 Klein base 9B (VAE files)](https://huggingface.co/black-forest-labs/FLUX.2-klein-base-9B/tree/main/vae) | `vae/flux2-vae.safetensors` — use the compatible VAE checkpoint (rename or convert only when compatible with ComfyUI's loader) |
-| **UltraTex albedo LoRA** | [Yibo-Zhang/UltraTex ModelScope](https://www.modelscope.ai/models/Yibo-Zhang/UltraTex) → `flux2/lora/dit_lora.safetensors` | `loras/ultratex_flux2.safetensors` |
-| **UltraTex metallic/roughness LoRA** | [Same ModelScope repository](https://www.modelscope.ai/models/Yibo-Zhang/UltraTex) → `flux2_mr/lora/dit_lora.safetensors` | `loras/ultratex_flux2_mr.safetensors` |
-| **UltraTex foreground-aware decoder** | [Same ModelScope repository](https://www.modelscope.ai/models/Yibo-Zhang/UltraTex) → `flux2/decoder.pt` | `ultratex/ultratex_flux2_decoder.pt` |
+| **FLUX.2 Klein base 9B Q4_0 GGUF** | [Unsloth GGUF — 9B Q4_0 file](https://huggingface.co/unsloth/FLUX.2-klein-base-9B-GGUF/blob/main/flux-2-klein-base-9b-Q4_0.gguf) | `diffusion_models/flux-2-klein-base-9b-Q4_0.gguf` |
+| **Qwen3-8B Q6_K GGUF** (text encoder) | [Unsloth Qwen3-8B Q6_K file](https://huggingface.co/unsloth/Qwen3-8B-GGUF/blob/main/Qwen3-8B-Q6_K.gguf) | `text_encoders/Qwen3-8B-Q6_K.gguf` |
+| **FLUX.2 VAE** | [BFL FLUX.2 Klein base 9B (VAE files)](https://huggingface.co/black-forest-labs/FLUX.2-klein-base-9B/tree/main/vae) | `vae/flux2-vae.safetensors` (a ComfyUI-compatible FLUX.2 VAE checkpoint) |
+| **UltraTex albedo LoRA** | [Yibo-Zhang/UltraTex on ModelScope](https://www.modelscope.ai/models/Yibo-Zhang/UltraTex) → `flux2/lora/dit_lora.safetensors` | `loras/ultratex_flux2.safetensors` |
+| **UltraTex metallic/roughness LoRA** | [Same repository](https://www.modelscope.ai/models/Yibo-Zhang/UltraTex) → `flux2_mr/lora/dit_lora.safetensors` | `loras/ultratex_flux2_mr.safetensors` |
+| **UltraTex foreground-aware decoder** | [Same repository](https://www.modelscope.ai/models/Yibo-Zhang/UltraTex) → `flux2/decoder.pt` | `ultratex/ultratex_flux2_decoder.pt` |
+| **Real-ESRGAN general x4v3** (8K workflow) | [Real-ESRGAN release v0.2.5.0](https://github.com/xinntao/Real-ESRGAN/releases/tag/v0.2.5.0) → `realesr-general-x4v3.pth` (BSD-3-Clause) | `upscale_models/realesr-general-x4v3.pth` |
 
-The FLUX 9B adapters **are not interchangeable with FLUX 4B**. Use **FLUX.2 Klein base 9B**, not distilled 4B and not an unrelated FLUX.1 checkpoint. The UltraTex albedo and MR adapters are different files even if their original downloaded names are both `dit_lora.safetensors`.
-
-Suggested layout:
-
-```text
-ComfyUI/models/
-├── diffusion_models/
-│   └── flux-2-klein-base-9b-Q4_0.gguf
-├── text_encoders/
-│   └── Qwen3-8B-Q6_K.gguf
-├── vae/
-│   └── flux2-vae.safetensors
-├── loras/
-│   ├── ultratex_flux2.safetensors
-│   └── ultratex_flux2_mr.safetensors
-└── ultratex/
-    └── ultratex_flux2_decoder.pt
-```
-
-**Downloading both UltraTex LoRAs and decoder:** From the [official UltraTex repository](https://github.com/yiboz2001/UltraTex), download the FLUX.2-specific weights at the ModelScope link above. Its suggested CLI command is:
+The UltraTex adapters are made for **FLUX.2 Klein base 9B**; they do not work with FLUX.2 4B or FLUX.1. The albedo and
+MR LoRAs are different files even though both are called `dit_lora.safetensors` upstream — rename them as shown.
+The UltraTex weights can also be fetched with the publisher's CLI:
 
 ```bash
 pip install modelscope
 modelscope download --model Yibo-Zhang/UltraTex --local_dir UltraTex_weights
 ```
 
-Copy only the `flux2` and `flux2_mr` artifacts listed above; you do not need to install the research repo or copy its entire `checkpoints` directory into ComfyUI. If a provider changes its filenames or repository layout, follow the publisher's current instructions and verify adapter task identity. The VAE in some repositories is published in Diffusers subfolders rather than a directly loadable single file; **do not assume any VAE `diffusion_pytorch_model.safetensors` can just be renamed**—use a compatible FLUX.2 ComfyUI VAE checkpoint. If you already have a working `flux2-vae.safetensors`, keep it.
+Copy only the `flux2` and `flux2_mr` files listed above.
 
----
-
-## First run · recommended node setup
-
-1. **UTX 0. Load Mesh (v2)**: pick a mesh from the dropdown (put it in `ComfyUI/input`) or enter an absolute path. `copy_uvs` preserves valid existing UVs; uncheck it to unwrap later.
-2. If your mesh has no usable UVs, connect **UTX 0. UV Unwrap Mesh** (`comfy_gpu` or optional `xatlas`).
-3. Use **UTX 1** to prepare the original mesh, camera views, normals and reference-image conditions.
-4. Load **FLUX.2 Klein base 9B GGUF** and its **Qwen3-8B** text encoder, VAE and UltraTex foreground decoder; apply the correct albedo/MR LoRA.
-5. Generate with **UTX 2**. For full multi-view coverage, use **10 views (6 canonical + 4 guided)**, `2048` view resolution on sufficient VRAM, or `1024` for a lighter workflow. Settings such as guidance and steps remain yours to choose.
-6. Feed the generated views and source MESH to **UTX 3 Fast Surface Texture Baker**; set the atlas resolution independently (e.g. 2048 or 4096) and select `fast_detail` or `off_direct` as appropriate.
-7. Connect the resulting BaseColor/MR maps to the material stage and export your textured GLB.
-
-**Note:** v2 intentionally ships **without bundled workflow JSON files**, so you can publish the official workflow separately.
-
-### New mesh-loader notes
-
-- Dropdown: `.glb`, `.gltf`, `.obj`, `.ply`, `.stl`, `.off`, `.3mf` under `ComfyUI/input` (including subfolders).
-- Custom path: absolute path or a relative path inside `ComfyUI/input`.
-- **FBX/DAE:** enter a file path and set `blender_path` to `blender.exe` if Blender is not on PATH. It imports to a temporary GLB using Blender, then constructs the native MESH. The original source file is not modified. Support depends on your Blender import/export capability.
-- **Copy UVs = ON**: existing valid vertex UVs are copied (and OBJ V coordinates are converted to native glTF/ComfyUI V-down). Missing/invalid UVs raise a helpful error instead of silently inventing coordinates.
-- **Copy UVs = OFF**: only geometry/normals are loaded; unwrap with UTX separately.
-- Mesh instances are combined into a single native MESH with node transforms applied; per-face material slots, textures, skinning, animation and morph targets are **not** imported by this geometry-only node. UV islands can overlap across objects/materials; inspect/unwrap before baking.
-
----
-
-## Faster decoding: opt-in research mode
-
-**Normal startup uses the established tiled VAE** and is the recommended quality-reference path. The experimental **FullContextTest** can substantially reduce 2048 decode time, but changes the normalization and attention context and may alter output color/details. It is **not** equivalent to the old decoder and is currently a TEST feature.
-
-Use the supplied optional PowerShell helper from the plugin folder (adjust paths to your installation):
-
-```powershell
-.\tools\Start-UltraTex.ps1 -Mode FullContextTest -ComfyRoot 'C:/path/ComfyUI' -PythonPath 'C:/path/python_embeded/python.exe'
+```text
+ComfyUI/models/
+├── diffusion_models/flux-2-klein-base-9b-Q4_0.gguf
+├── text_encoders/Qwen3-8B-Q6_K.gguf
+├── vae/flux2-vae.safetensors
+├── loras/ultratex_flux2.safetensors
+├── loras/ultratex_flux2_mr.safetensors
+├── ultratex/ultratex_flux2_decoder.pt
+└── upscale_models/realesr-general-x4v3.pth
 ```
 
-First use `-DryRun` to inspect the command. The tested 8GB full-context configuration requires an explicit startup allocator cap and restarts to switch modes. **Never assume the default cap fits another GPU.** See [FULL_CONTEXT_TEST.md](FULL_CONTEXT_TEST.md) for exact environment switches, safeguards and rollback. To restore the standard tiled behavior, restart in `Legacy` mode.
+---
+
+## Workflows
+
+Drag a file from [`workflows/`](workflows) into ComfyUI:
+
+- **`MostAadTech_UltraTex_8k.json`** — the full 8K workflow: 10 albedo views at 2048, MR at 1536, RealESR enhancer,
+  8192 atlas, cache cleaner.
+- **`MostAadTech_UltraTex_workflow.json`** — the earlier 4K workflow: 12 albedo and 12 MR views at 2048, no enhancer,
+  4096 atlas.
+
+Workflows saved with older versions load as they are: removed baker options are converted automatically
+(`sharp_anchor_v2`, `sharp_anchor`, `sharp_source` → `Quality`; `fast_detail`, `off_direct` → `Fast`), and new
+inputs start at their defaults.
+
+### First run
+
+1. **UTX 0. Load Mesh (v2)** — pick a mesh from `ComfyUI/input` or enter a path. If it has no usable UVs, add
+   **UTX 0. UV Unwrap Mesh** (`comfy_gpu`, or `xatlas`).
+2. **UTX 1. Prepare Mesh + Reference** — connect the reference image (and its mask, if you have one).
+3. **UTX 2. Generate Views + LoRA** — once with the albedo LoRA (`task = albedo`, 10 views) and once with the MR LoRA
+   (`task = mr`, 6 views).
+4. **UTX 2.5 — Intelligent View Enhancer** (8K) — `enabled`, `upscaler = Comfy upscale model`,
+   `target = Native model scale`, connect a `Load Upscale Model` node with `realesr-general-x4v3.pth`.
+5. **UTX 3. Fast Surface Texture Baker** — `texture_size` 4096 or 8192, `bake_quality = Quality`.
+6. **UTX 4. Cache Cleaner** → **Save GLB**.
+
+## Settings guide
+
+### UTX 1 · multi-view pictures
+
+`UTX 1. Prepare Mesh + Reference` has optional inputs `reference_back`, `reference_character_left_side`,
+`reference_character_right_side`, `reference_top` and `reference_bottom`, each with an optional mask.
+Use them when you need a specific pattern somewhere the front reference cannot show (an emblem on the back, a
+tattoo on one arm). You can connect any of them, one or several.
+
+- "Left side" means **the character's own left**. A side picture that faces the wrong way is mirrored automatically;
+  top and bottom pictures are also turned. Each picture can only land on its own camera, so a back picture can never
+  end up on the front.
+- `view_reference_strength` (default 0.5) is how long FLUX is held to the picture: 0.5 = the first half of the steps.
+  Higher keeps the picture more literally, lower lets FLUX adapt it more to the mesh.
+- The `view_references_512` output shows where each picture landed; the console prints one line per picture.
+- Pictures guide the albedo (colour) pass only. The metallic/roughness pass is generated exactly as without pictures.
+
+### UTX 2 · Generate Views + LoRA
+
+| Input | Recommendation |
+|---|---|
+| `view_resolution` | 2048 for the best texture on 8 GB; 1024 for a light test. |
+| `view_count` | 10 (6 canonical + 4 guided 45°). |
+| `steps` | The included workflows use 4. More steps take proportionally longer. |
+| `extra_denoise` | Keep 1.0: the guided 45° pass already pins everything the first six views saw well. |
+| `refine_denoise` | 0.35 (with `refine_steps` 4) repaints every view from one shared texture: better agreement between views, fewer colour fringes, about 5 minutes more. 0 = off. |
+| `fast_decode` | On = one tiled-decode layout instead of three, about 3× faster decoding with the same colours. |
+
+### UTX 3 · Fast Surface Texture Baker
+
+| `bake_quality` | Use |
+|---|---|
+| `Quality` | Default. Sharpest result: the front camera's pixels are kept where it sees the surface well; other cameras take over at steep angles. |
+| `Fast` | Quick previews. |
+| `Quality + edge repair` | Also rejects and recolours pixels next to geometric edges. Removes some silhouette colour fringes but blurs thin parts and is slower. |
+
+The final texture resolution is set here (`texture_size`), not in UTX 2.5. An 8192 atlas needs more RAM and about two
+minutes of bake time on an 8 GB laptop GPU.
 
 ---
 
+## UTX 4 — Cache Cleaner
 
-## UTX 4 — Temporary Cache Cleaner (v2.0.1)
+UltraTex keeps intermediate data (views, G-buffers, latents) in `ComfyUI/output/.ultratex_cache/session_…`. That folder
+belongs to one ComfyUI session and is deleted when ComfyUI closes; if ComfyUI crashed, it is deleted at the next start.
 
-`UTX 4. Cache Cleaner` is a non-destructive size scanner by default, with a **Scan Size** button, a confirmation-protected **Delete Now** button, and an optional workflow cleanup mode. No CUDA/model loading is needed.
-
-It checks **only direct children** of ComfyUI's configured output directory:
+`UTX 4. Cache Cleaner` handles the rest. By default it only reports sizes (**Scan Size** button). **Delete Now** asks
+for confirmation first. It only touches direct children of `ComfyUI/output` that are UltraTex temporary folders:
 
 ```text
 ComfyUI/output/
 ├── .ultratex_cache/             ← temporary: can delete
-├── ultratex_views_22ee24b2d155/ ← temporary: can delete
-├── ultratex_views_5919409c7e59/ ← temporary: can delete
-├── ultratex_views_<other-ID>/   ← temporary: can delete
-├── ultratex/                   ← PROTECTED: saved GLBs, textures
-├── 3d/                         ← PROTECTED
-└── anything_else/              ← PROTECTED
+├── ultratex_views_<ID>/         ← temporary: can delete
+├── ultratex/                    ← PROTECTED: saved GLBs, textures
+└── anything_else/               ← PROTECTED
 ```
 
-The Scan Size button reports each eligible directory's logical file size and its total in MiB/GiB; it does not delete anything. On pressing **Delete Now**, a confirmation dialog shows the exact directory-name rule before it deletes. Unsafe symlink/junction directories and unreadable trees are refused. Files locked by Windows/OneDrive may prevent removal; the resulting status reports failures. Actual freed disk space can differ from logical file sizes.
+**To keep nothing but the GLB after every run:** place the cleaner after the baker (before Save GLB), set
+`mode = delete_when_executed` and `confirm_delete_on_run = true`. The next run then cannot reuse cached work and
+regenerates everything. Skip `UTX Save View Bundle` if you don't need view bundles (each is about 2 GB).
 
-**Using it in a graph:**
+**Warning:** never delete these folders while an UltraTex job is running. Deletion is permanent (no Recycle Bin).
+Junctions/symlinks and unreadable folders are refused.
 
-- For **start-of-workflow scanning**, add `UTX 4. Cache Cleaner` unconnected (it's an output node) or connect its pass-through input/output to any compatible value. Default mode `scan_only` leaves everything unchanged.
-- For **automatic end-of-workflow cleanup**, place it *after the last node that needs the temporary files*, set `mode = delete_when_executed` and `confirm_delete_on_run = true`. The `passthrough` input is optional; when connected, the node returns the original input unchanged.
-- Manual **Scan Size** / **Delete Now** buttons work in the ComfyUI node editor without running a queued workflow, after restarting ComfyUI and refreshing the browser.
+---
 
-**WARNING:** these folders contain *live intermediate views and cache data*. Deleting them during an UltraTex job can break sampling/baking or downstream Save Views nodes, even if the final GLB directory is protected. Do not click Delete Now while a job is using these intermediates. Automatic cleanup should be the **final execution step**, *after* saving all desired view bundles, textures and GLBs. Turning on automatic cleanup before an active generation will remove files it needs. The cleanup is permanent; the tool does not move them to the Recycle Bin.
+## Optional: full-context VAE test mode
 
-The cleaner doesn't delete the `ultratex` directory, unrelated output folders, saved GLBs, or top-level files. Its output includes a cache-size summary and a text report; data pass-through remains unchanged.
+Normal startup uses the tiled VAE, which is the quality reference. `tools/Start-UltraTex.ps1 -Mode FullContextTest`
+starts ComfyUI with an experimental full-context decoder that is faster but can change colours and fine details.
+It is off unless you start ComfyUI this way; see [FULL_CONTEXT_TEST.md](FULL_CONTEXT_TEST.md). Restart in `Legacy` mode to go back.
+
+---
 
 ## License and contributing
 
-**UltraTex Modular v2 project-authored source is distributed under GNU GPL version 3.0.** See [LICENSE](LICENSE). Vendored MIT/Apache-2.0 code keeps all original notices; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), [vendor/UPSTREAM_LICENSE](vendor/UPSTREAM_LICENSE) and [SLA Apache-2.0 license](vendor/sparse_attention/LICENSE.txt).
+**UltraTex Modular project-authored source is distributed under the GNU GPL version 3.0.** See [LICENSE](LICENSE).
+Vendored MIT/Apache-2.0 code keeps its original notices; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md),
+[vendor/UPSTREAM_LICENSE](vendor/UPSTREAM_LICENSE) and the [SLA Apache-2.0 license](vendor/sparse_attention/LICENSE.txt).
 
 - **Free to use, inspect, modify and redistribute** under the GPL terms.
-- When you **distribute a modified version**, GPLv3 requires you to provide corresponding source and honor GPL rights; please contribute improvements back through pull requests. **Private edits do not automatically have to be published.**
-- **GPL permits charging for copies and commercial distribution.** If you want to prohibit resale, that cannot be achieved using standard GNU GPLv3. Please do not claim GPL forbids selling software.
-- No model weights are distributed by the project, and this license **does not supersede the model or LoRA license terms**.
+- If you **distribute a modified version**, GPLv3 requires you to provide the corresponding source; please send
+  improvements back as pull requests. Private edits do not have to be published.
+- No model weights are distributed by this project, and this license does not replace the model or LoRA license terms.
 
 ### Commercial use of generated outputs
 
-**Generated textures/assets can be used commercially when the applicable upstream model and adapter licenses permit it.** The referenced BFL FLUX.2 Klein base 9B license says that outputs may be used commercially **subject to its restrictions** (including restrictions on competitive-model training and required content review/filtering or disclosure where applicable). **The FLUX base 9B model itself is non-commercially licensed**; commercial/production *model use* may require a separate BFL license. The UltraTex LoRA/decoder publisher may have additional terms; check them before commercial distribution. This project adds no watermark, royalty, or claim of ownership over your generated files.
-
-Read the [BFL FLUX.2 Klein base 9B license](https://huggingface.co/black-forest-labs/FLUX.2-klein-base-9B/blob/main/LICENSE.md) and the [UltraTex publisher repository](https://github.com/yiboz2001/UltraTex) before commercial deployment. **No unconditional legal guarantee of commercial safety is made.**
+Generated textures and assets can be used commercially when the upstream model and adapter licenses permit it. The
+BFL FLUX.2 Klein base 9B license allows commercial use of outputs **subject to its restrictions**; the FLUX base 9B
+model itself is under a non-commercial license, so commercial *use of the model* may need a separate BFL license. The
+UltraTex LoRA/decoder publisher may have further terms. This project adds no watermark, royalty, or ownership claim to
+your generated files. Read the [BFL FLUX.2 Klein base 9B license](https://huggingface.co/black-forest-labs/FLUX.2-klein-base-9B/blob/main/LICENSE.md)
+and the [UltraTex publisher repository](https://github.com/yiboz2001/UltraTex) before commercial use. This is not legal advice.
 
 ### Contributions
 
-Bug fixes, performance improvements, new hardware validation, bake-quality tests and mesh importers are welcome. Keep original notices, include corresponding source when redistributing GPL-covered changes, and document any third-party dependencies and their licenses. Please don't package other people's model weights into source-code releases.
+Bug fixes, speed-ups, hardware reports, bake-quality tests and mesh importers are welcome. Keep the original notices,
+document new third-party dependencies and their licenses, and don't commit model weights.
 
 ---
 
@@ -260,26 +282,22 @@ Bug fixes, performance improvements, new hardware validation, bake-quality tests
 
 | Problem | What to check |
 |---|---|
-| Nodes don't show | Folder nesting; one copy of the plugin; restart ComfyUI; install requirements using embedded Python |
-| Missing GGUF node | Install and enable [ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF) |
-| LoRA validation fails | Check that albedo and MR files weren't swapped and that you're using **Klein base 9B** |
-| Missing foreground decoder | Put `ultratex_flux2_decoder.pt` in `ComfyUI/models/ultratex/` |
-| No UVs or invalid UVs | Uncheck `copy_uvs` and run UTX UV Unwrap Mesh; validate UV collisions/islands |
-| Can't import FBX | Set `blender_path` to a working Blender executable, or export the mesh as GLB/OBJ |
-| OOM on 6GB | Try reduced workload where acceptable, or supported low-memory controls. Native 6GB support is not certified; do not expect full 2048 + LoRA to always fit |
-| Experimental output changes color | FullContextTest changes VAE context. Restart in `Legacy` mode for original tiled decoding |
-| Texture appears blurry at 4K | A 4096 atlas cannot create detail absent from 1024/2048 source views; inspect zoom, UV texel density and surface coverage |
+| Nodes don't show | One copy of the pack in `custom_nodes`, `__init__.py` directly inside its folder, requirements installed with ComfyUI's Python, ComfyUI restarted. |
+| Missing GGUF node | Install and enable [ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF). |
+| LoRA validation fails | Albedo and MR LoRA swapped, or not **FLUX.2 Klein base 9B**. |
+| Missing foreground decoder | Put `ultratex_flux2_decoder.pt` in `ComfyUI/models/ultratex/`. |
+| No or invalid UVs | Turn off `copy_uvs` in UTX 0 Load Mesh and add UTX 0 UV Unwrap Mesh. |
+| Can't import FBX | Set `blender_path` to a working Blender, or export the mesh as GLB/OBJ. |
+| Console says "VAE encode returned two different latents … corrupted encode discarded" | Expected now and then with dynamic VRAM: the bad encode was caught and replaced. |
+| A material looks like metal | The MR LoRA decides the materials from the reference. Some characters (e.g. dark armoured outfits) come out as rough metal everywhere. Check the MR preview before baking. |
+| Out of memory on 6 GB | Lower `view_resolution` or the atlas size; 6 GB GPUs are not tested. |
+| Texture blurry at 8K | 8K needs the enhancer (UTX 2.5) with an upscale model; an atlas cannot add detail the views don't have. Look at the generated views first. |
 
 ---
 
 <div align="center">
 
-**Built with care for free, local creative tools.**  
-[UltraTex research](https://github.com/yiboz2001/UltraTex) · [ComfyUI](https://github.com/comfyanonymous/ComfyUI) · [ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF)
+**Built with care for free, local creative tools.**
+[UltraTex research](https://github.com/yiboz2001/UltraTex) · [ComfyUI](https://github.com/comfyanonymous/ComfyUI) · [ComfyUI-GGUF](https://github.com/city96/ComfyUI-GGUF) · [Real-ESRGAN](https://github.com/xinntao/Real-ESRGAN)
 
 </div>
-
-
-## Optional UTX2.5 view enhancement (2.2.0rc1 TEST)
-
-See [VIEW_ENHANCER.md](VIEW_ENHANCER.md) for wiring, measured limitations and rollback. Enhancement is disabled by default. Native cameras/generation/MR/UTX4 remain supported.

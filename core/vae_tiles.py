@@ -54,7 +54,10 @@ def tiled_pass(samples, function, tile, overlap, scale, channels, output_device,
 
 
 @torch.inference_mode()
-def decode_tiled(vae,samples,tile=64,overlap=16,mode='batch1',masks=None):
+def decode_tiled(vae,samples,tile=64,overlap=16,mode='batch1',masks=None,layouts=3):
+    """layouts=3: ComfyUI's average of three tile layouts. layouts=1: one square layout, about 3x faster.
+    Measured on a 2048 view with the UltraTex decoder: same sharpness and mean colour, no seam at tile borders,
+    41.8 dB from the 3-layout average (fine texture-level differences only)."""
     import comfy.utils
     import comfy.model_management as mm
     batch=int(mode.removeprefix('batch'))
@@ -62,7 +65,7 @@ def decode_tiled(vae,samples,tile=64,overlap=16,mode='batch1',masks=None):
     shape=list(vae._tile_bounded_shape(samples.shape,tile,tile,None));shape[0]=batch
     memory=vae.memory_used_decode(shape,vae.vae_dtype)*batch
     mm.load_models_gpu([vae.patcher],memory_required=memory,force_full_load=vae.disable_offload)
-    shapes=((tile*2,tile//2),(tile//2,tile*2),(tile,tile))
+    shapes=((tile*2,tile//2),(tile//2,tile*2),(tile,tile)) if layouts==3 else ((tile,tile),)
     count=sum(comfy.utils.get_tiled_scale_steps(samples.shape[-1],samples.shape[-2],tw,th,overlap) for th,tw in shapes)*samples.shape[0]
     pbar=comfy.utils.ProgressBar(count)
     def decode(x):return vae.first_stage_model.decode(x.to(vae.vae_dtype).to(vae.device)).to(dtype=vae.vae_output_dtype())
@@ -72,5 +75,5 @@ def decode_tiled(vae,samples,tile=64,overlap=16,mode='batch1',masks=None):
             part=tiled_pass(samples,decode,shape,overlap,vae.upscale_ratio,vae.output_channels,vae.output_device,batch,pbar,masks)
             output=part if output is None else output+part
             del part
-        output=vae.process_output(output/3.0)
+        output=vae.process_output(output/len(shapes))
     return output.movedim(1,-1)

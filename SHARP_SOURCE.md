@@ -1,3 +1,5 @@
+> Historical release note. Current bake presets are Fast, Quality and Quality + edge repair; see README.md.
+
 # Source-preserving bake TEST — 2.2.0rc2
 
 In UTX3 choose `upscale_mode=sharp_source`. All three previous modes remain available; the default remains `fast_detail` for existing workflows. No node socket order changed.

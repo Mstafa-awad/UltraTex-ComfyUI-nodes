@@ -12,7 +12,7 @@ from .runtime import Store, fingerprint, interrupt, measure, object_identity, te
 
 
 @torch.inference_mode()
-def decode_views(vae,samples,policy,tiled=True):
+def decode_views(vae,samples,policy,tiled=True,single_layout=False):
     if getattr(vae,"latent_channels",None)!=128:
         raise ValueError("Decode Views requires a Flux2 VAE")
     if not getattr(vae,"utx_decoder_hash",None):
@@ -70,6 +70,9 @@ def decode_views(vae,samples,policy,tiled=True):
                                     conditions.background,conditions.gbuffer.plan,
                                     conditions.gbuffer.masks[vi],vae.utx_decoder_hash,
                                     conditions.encoder_id,vi,tiled,policy.decode_tile)
+                    if single_layout and tiled:
+                        full=False
+                        key_parts=key_parts+("single-layout",)
                     key=fingerprint("decode-v4-full-context1" if full else legacy_tag,*key_parts)
                     mask=np.asarray(Image.fromarray(np.uint8(conditions.gbuffer.masks[vi].read())*255).resize((size,size),Image.Resampling.NEAREST))>0
                     masks[vi]=store.put(mask)
@@ -82,7 +85,9 @@ def decode_views(vae,samples,policy,tiled=True):
                                and type(vae.first_stage_model).__name__=='AutoencoderKL'
                                and not getattr(vae,'handles_tiling',True) and str(vae.output_device)=='cpu'
                                and callable(getattr(vae,'_tile_bounded_shape',None)))
-                    if full:
+                    if single_layout and tiled:
+                        decoded=scheduled_decode(vae,tile,policy.decode_tile,max(8,policy.decode_tile//4),masks=tile_masks,layouts=1)
+                    elif full:
                         decoded=decode_full(vae,tile,full_state)
                         if not full_state['last_used_full']:key=fingerprint(legacy_tag,*key_parts)
                     elif scheduled:
@@ -116,8 +121,7 @@ def inspect_views(collection,job_index=0,view_indices=(0,1,2,3,4,5),preview_size
     for i in view_indices:
         rgb=views.images[i].read()
         mask=views.masks[i].read()
-        # Enhancement stores float RGB without another 8-bit quantisation.
-        # Convert only the preview; retain original data for baking/save bundles.
+        # View bundles saved by older versions hold float enhanced RGB; convert only the preview.
         if rgb.dtype != np.uint8:
             rgb=np.clip(rgb*255+.5,0,255).astype(np.uint8)
         if preview_size and rgb.shape[0]>preview_size:

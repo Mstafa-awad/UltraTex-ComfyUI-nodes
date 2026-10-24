@@ -205,7 +205,7 @@ def _reuse_qk_norm_buffers(norm, q, k, v):
         return norm(q, k, v)
     global _QK_REUSE_ANNOUNCED
     if not _QK_REUSE_ANNOUNCED:
-        log.info("[UTX Q/K reuse] Reusing Q/K buffers during RMSNorm; set UTX_QK_REUSE=0 to restore original behavior")
+        log.debug("[UTX Q/K reuse] Reusing Q/K buffers during RMSNorm; set UTX_QK_REUSE=0 to restore original behavior")
         _QK_REUSE_ANNOUNCED = True
     q_normalized = norm.query_norm(q).to(v)
     if q_normalized.shape != q.shape:
@@ -431,7 +431,7 @@ def bounded_qk_norm(dm):
                 if _native_rms_norm(layer):
                     layer.forward = wrap(layer.forward)
                     wrapped.append(layer)
-        log.info("[UTX bounded Q/K norm] %d native RMSNorm modules; chunk=%d; MLP chunk unchanged", len(wrapped), chunk)
+        log.debug("[UTX bounded Q/K norm] %d native RMSNorm modules; chunk=%d; MLP chunk unchanged", len(wrapped), chunk)
         yield
     finally:
         for layer in wrapped:
@@ -459,7 +459,7 @@ def exact_rope():
         yield
     finally:
         flux_math.apply_rope = original
-        log.info("[UTX exact RoPE] fused calls=%d; original math restored", calls)
+        log.debug("[UTX exact RoPE] fused calls=%d; original math restored", calls)
 
 
 @contextlib.contextmanager

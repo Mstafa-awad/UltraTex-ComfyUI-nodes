@@ -152,6 +152,8 @@ def delete_cache(output_dir: Path | None = None) -> dict[str, Any]:
         except OSError as exc:
             errors.append(f"{name}: {exc}")
     after = scan_cache(root)
+    if removed and output_dir is None:
+        _forget_cached_node_outputs()
     return {
         "before": before,
         "after": after,
@@ -162,6 +164,23 @@ def delete_cache(output_dir: Path | None = None) -> dict[str, Any]:
         "reclaimed_mib": round(max(0, before["total_bytes"] - after["total_bytes"]) / (1024 ** 2), 2),
         "success": not refused and not errors,
     }
+
+
+def _forget_cached_node_outputs() -> bool:
+    """Make ComfyUI drop its cached node outputs once the current run ends (models stay loaded).
+
+    Those outputs can point at the arrays just deleted; without this a later run that changes only a downstream
+    setting would reuse them and fail. With it, the next run simply recomputes."""
+    try:
+        from server import PromptServer
+        queue = PromptServer.instance.prompt_queue
+        with queue.mutex:
+            queue.flags["unload_models"] = False
+            queue.flags["free_memory"] = True
+            queue.not_empty.notify()
+        return True
+    except Exception:
+        return False
 
 
 def _format_summary(result: dict[str, Any]) -> str:
@@ -221,7 +240,7 @@ class UTXCacheCleaner(io.ComfyNode):
                 io.String.Output(display_name="cleanup_report"),
             ],
             is_output_node=True,
-            description="Shows UltraTex temporary cache size; deletes only output/.ultratex_cache and output/ultratex_views_* with explicit confirmation. Never deletes output/ultratex or saved GLBs.",
+            description="Shows UltraTex temporary cache size; deletes only output/.ultratex_cache and output/ultratex_views_* with explicit confirmation, then lets ComfyUI forget the deleted intermediates so the next run recomputes them. Never deletes output/ultratex or saved GLBs. Without it the cache is still removed when ComfyUI exits.",
         )
 
     @classmethod

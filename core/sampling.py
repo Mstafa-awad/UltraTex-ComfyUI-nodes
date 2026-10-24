@@ -14,7 +14,7 @@ import torch
 
 from .contracts import Samples, SampleResult
 from .models import validate_backbone
-from .runtime import Store, atomic_json, fingerprint, interrupt, tensor_from
+from .runtime import Store, fingerprint, interrupt, tensor_from
 from .diagnostics import active as _active_diag, safe_model_loaded_size_mib as _safe_model_size_mib
 
 _SAMPLING_LOCK=threading.RLock()
@@ -109,6 +109,11 @@ def _validate_text(job):
                          "Klein base 9B needs (1, 512, 12288).")
 
 
+def keep_active(step_index,keep_steps):
+    """Held tokens follow their start image while step_index (1-based) <= keep_steps; keep_steps < 0 holds every step."""
+    return keep_steps<0 or step_index<=keep_steps
+
+
 def _sample_job(model,job,steps,guidance,denoise,backend,topk,chunk,policy,controller=None):
     import comfy.model_management as mm
     import comfy.utils
@@ -187,7 +192,7 @@ def _sample_job(model,job,steps,guidance,denoise,backend,topk,chunk,policy,contr
                 del uncond
             x=x+(next_t-t)*pred
             del pred
-            if keep is not None:
+            if keep is not None and keep_active(step_index,getattr(pack,"keep_steps",-1)):
                 known=(1-next_t)*initial+next_t*noise
                 x=keep*known+(1-keep)*x
             if controller is not None:controller.after_step(model)
@@ -200,7 +205,7 @@ def _sample_job(model,job,steps,guidance,denoise,backend,topk,chunk,policy,contr
         diag.mark(sample_label+".diffusion_complete", tiled_lora_casts=int(tiled_report["tiled_casts"]),
                   tiled_lora_fallbacks=int(tiled_report["fallback_casts"]))
     if tiled_report["tiled_casts"] or tiled_report["fallback_casts"]:
-        _LOG.info("[UTX tiled LoRA] tiled GGUF casts=%d; unsupported fallback casts=%d; "
+        _LOG.debug("[UTX tiled LoRA] tiled GGUF casts=%d; unsupported fallback casts=%d; "
                   "set UTX_TILED_LORA=0 to compare original path",
                   tiled_report["tiled_casts"], tiled_report["fallback_casts"])
     if device.type=="cuda":
@@ -274,15 +279,9 @@ def sample_workset(model,workset,policy,steps=25,guidance=4.,denoise=1.,backend=
         run_id=fingerprint(run_id,"utx-diagnostic-fresh",time.time_ns())
         if diag_run:
             diag_run.mark("UTX2.sampling.force_fresh_cache",cache_reuse_disabled=True)
-    manifest=store.root/("workset-"+run_id+".json")
     done={}
-    completed=[]
     load_requests=0
     start=time.perf_counter()
-    def progress(status,error=None):
-        atomic_json(manifest,dict(version=1,status=status,completed=completed,total_jobs=len(workset.jobs),
-                                 model_load_requests=load_requests,error=error))
-    progress("running")
     with _SAMPLING_LOCK:
         try:
             for task,binding in bindings.items():
@@ -377,14 +376,10 @@ def sample_workset(model,workset,policy,steps=25,guidance=4.,denoise=1.,backend=
                                              "tiled_lora_casts","tiled_lora_fallback_casts","load_seconds",
                                              "activation_and_headroom_bytes","model_group_load_seconds")})
                     done[index]=SampleResult(job,latent,report)
-                    completed.append(dict(index=index,job_id=job.identity,seed=job.seed,
-                                          latent=asdict(latent),report=report))
-                    progress("running")
-            progress("complete")
         except BaseException as error:
-            progress("interrupted_or_failed",str(error))
+            _LOG.warning("UltraTex sampling interrupted or failed: %s",error)
             raise
     results=tuple(done[i] for i in range(len(workset.jobs)))
-    return Samples(results,str(manifest)),dict(stage="sample_workset",jobs=len(results),wall_seconds=time.perf_counter()-start,
-                model_load_requests=load_requests,manifest=str(manifest),
+    return Samples(results,""),dict(stage="sample_workset",jobs=len(results),wall_seconds=time.perf_counter()-start,
+                model_load_requests=load_requests,
                 note="Manager requests are instrumented; internal layer-transfer counts require ComfyUI profiler logs.")

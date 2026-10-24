@@ -97,7 +97,65 @@ def atomic_json(path, value):
         tmp.unlink(missing_ok=True)
 
 
+SESSION_PREFIX = "session_"
+_SESSION_DIR = None
+
+
+def _process_token(pid=None):
+    """'<pid>_<creation time>': stays unique when Windows reuses a PID."""
+    try:
+        import psutil
+        process = psutil.Process(pid) if pid is not None else psutil.Process()
+        return f"{process.pid}_{int(process.create_time())}"
+    except Exception:
+        return f"{pid if pid is not None else os.getpid()}_0"
+
+
+def _remove_tree(path):
+    shutil.rmtree(path, ignore_errors=True)
+
+
+def default_spill_directory(output_dir):
+    """This ComfyUI process's own cache folder: <output>/.ultratex_cache/session_<pid>_<start>.
+
+    Intermediates are reused while ComfyUI runs and deleted when it exits; a folder left behind by a crash or a
+    closed console window is deleted at the next start (``remove_stale_sessions``)."""
+    global _SESSION_DIR
+    with _LOCK:
+        if _SESSION_DIR is None:
+            import atexit
+            _SESSION_DIR = Path(output_dir).resolve() / ".ultratex_cache" / (SESSION_PREFIX + _process_token())
+            atexit.register(_remove_tree, _SESSION_DIR)
+        return _SESSION_DIR
+
+
+def remove_stale_sessions(output_dir):
+    """Delete cache folders of ComfyUI processes that are no longer running, and loose files left by older
+    UltraTex versions (flat .npy/.json cache). A folder of a live ComfyUI process is never touched."""
+    root = Path(output_dir).resolve() / ".ultratex_cache"
+    if not root.is_dir():
+        return {"removed": 0}
+    removed = 0
+    for entry in root.iterdir():
+        if entry.is_dir() and entry.name.startswith(SESSION_PREFIX):
+            pid_text = entry.name[len(SESSION_PREFIX):].split("_", 1)[0]
+            if pid_text.isdigit() and entry.name == SESSION_PREFIX + _process_token(int(pid_text)):
+                continue  # owner still running
+            _remove_tree(entry)
+            removed += 1
+        elif entry.is_file() and entry.suffix in (".npy", ".json", ".tmp"):
+            entry.unlink(missing_ok=True)
+            removed += 1
+    return {"removed": removed}
+
+
 class Store:
+    """Content/key-addressed arrays on disk. One ``<token>.npy`` per entry, no side files.
+
+    The token is sha256 of the key (unkeyed arrays use their content fingerprint as key), and it doubles as the
+    ArrayRef digest, so identities stay a pure function of the inputs. Files are written to a temporary name and
+    renamed, so a present file is always complete."""
+
     def __init__(self, policy: RuntimePolicy):
         self.policy = policy
         self.root = Path(policy.spill_directory).expanduser().resolve()
@@ -105,36 +163,31 @@ class Store:
         self.hits = 0
         self.writes = 0
 
-    def _paths(self, key):
+    def _path(self, key):
         token = hashlib.sha256(key.encode()).hexdigest()
-        return self.root / (token + ".npy"), self.root / (token + ".json")
+        return self.root / (token + ".npy"), token
 
     def lookup(self, key):
-        path, meta = self._paths(key)
-        if not path.is_file() or not meta.is_file():
+        path, token = self._path(key)
+        if not path.is_file():
             return None
         try:
-            data = json.loads(meta.read_text(encoding="utf-8"))
-            if data["version"] != 1 or not data["complete"]:
-                return None
-            ref = ArrayRef(str(path), tuple(data["shape"]), data["dtype"], data["digest"])
-            if path.stat().st_size != data["file_bytes"]:
-                return None
-            ref.read()  # validate the NPY header before accepting a persistent entry
+            array = np.load(path, mmap_mode="r", allow_pickle=False)
+            ref = ArrayRef(str(path), tuple(array.shape), array.dtype.str, token)
+            del array
             self.hits += 1
             return ref
-        except (ValueError, KeyError, OSError, EOFError):
+        except (ValueError, OSError, EOFError):
             return None
 
     def put(self, value, key=None):
         array = np.ascontiguousarray(value)
-        digest = fingerprint(array)
-        key = key or digest
+        key = key or fingerprint(array)
         with _LOCK:
             old = self.lookup(key)
-            if old is not None and old.digest == digest:
+            if old is not None and old.shape == tuple(array.shape) and old.dtype == array.dtype.str:
                 return old
-            path, meta = self._paths(key)
+            path, token = self._path(key)
             used = sum(p.stat().st_size for p in self.root.glob("*.npy"))
             if used + array.nbytes + 512 > self.policy.disk_budget_gb * 2**30:
                 raise MemoryError("UltraTex spill budget reached. Increase disk_budget_gb or "
@@ -146,12 +199,10 @@ class Store:
                 with tmp.open("wb") as stream:
                     np.save(stream, array, allow_pickle=False)
                 os.replace(tmp, path)
-                atomic_json(meta, dict(version=1, complete=True, shape=array.shape, dtype=array.dtype.str,
-                                       digest=digest, file_bytes=path.stat().st_size))
             finally:
                 tmp.unlink(missing_ok=True)
             self.writes += 1
-            return ArrayRef(str(path), tuple(array.shape), array.dtype.str, digest)
+            return ArrayRef(str(path), tuple(array.shape), array.dtype.str, token)
 
     def cached(self, key, factory):
         ref = self.lookup(key)

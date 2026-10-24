@@ -1,3 +1,5 @@
+> Historical release note. Current bake presets are Fast, Quality and Quality + edge repair; see README.md.
+
 # UltraTex Breakthrough TEST — installation and rollback
 
 This archive is installable, but the new full-context decoder is experimental and **disabled by default**. Read the separate engineering report for measured speed, memory, image differences and exclusions. It is not a certified 20–30% quality-preserving production improvement.

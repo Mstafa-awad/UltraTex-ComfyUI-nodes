@@ -18,7 +18,7 @@ class IntelligentViewEnhancer(io.ComfyNode):
             io.Boolean.Input("square_crop",default=False,tooltip="Off keeps rectangular bounds and uses aspect-preserving letterboxing; camera fitting is unchanged."),
             io.Combo.Input("mask_mode",options=["geometry","BiRefNet mask","hybrid mask","none"],default="geometry",
                            tooltip="Geometry reuses exact generation masks. BiRefNet/hybrid take the native BACKGROUND_REMOVAL model or a foreground MASK batch; geometry protects silhouette bounds."),
-            io.Combo.Input("upscaler",options=["None","VOSR2","Comfy upscale model"],default="None"),
+            io.Combo.Input("upscaler",options=["None","Comfy upscale model"],default="None"),
             io.Combo.Input("target",options=["Original","2048","4096","8192","Native model scale"],default="Original",
                            tooltip="Longest crop side. Native model scale keeps the Comfy upscale model's actual "
                                    "output pixels without a second resize; recommended for RealESR. "
@@ -29,7 +29,8 @@ class IntelligentViewEnhancer(io.ComfyNode):
             io.Boolean.Input("debug_preview",default=False),
             io.Mask.Input("foreground_masks",optional=True),
             io.BackgroundRemoval.Input("bg_removal_model",optional=True),
-            io.Custom("VOSR2_MODEL").Input("vosr2_model",optional=True),
+            io.Custom("VOSR2_MODEL").Input("vosr2_model",optional=True,advanced=True,lazy=True,
+                                         tooltip="Retired compatibility input; not executed by supported enhancement."),
             io.UpscaleModel.Input("upscale_model",optional=True),
         ],[
             VIEWS.Output(display_name="enhanced_views"), VIEWS.Output(display_name="original_views"),
@@ -37,7 +38,7 @@ class IntelligentViewEnhancer(io.ComfyNode):
             io.String.Output(display_name="report"),
         ],"Optional RGB-only stage between UTX2 and UTX3. Preserves original views and calibrated cameras, "
           "stores exact crop/pixel-centre transforms, streams active views, and leaves MR untouched. "
-          "VOSR2 uses the separately installed ComfyUI-VOSR2 and existing local weights; no downloads. "
+          "Use a connected Comfy upscale checkpoint such as the existing RealESR model. "
           "AI detail may be invented: compare before enabling it for a final asset.")
 
     @classmethod
@@ -47,17 +48,14 @@ class IntelligentViewEnhancer(io.ComfyNode):
                 vosr2_model=None,upscale_model=None,bg_removal_model=None):
         from .core.enhance import enhance_views,restore_original
         validate_bake_branch(setup,views,"albedo")
-        cleanup=None
-        try:
-            enhanced,report = enhance_views(setup,views,enabled,crop,padding_percent,square_crop,target,
-                upscaler,mask_mode,foreground_masks,strength,vram_mode,vosr2_model,upscale_model,seed,debug_preview,
-                bg_removal_model=bg_removal_model)
-        finally:
-            if upscaler=="VOSR2" and vosr2_model is None:
-                from .core.super_resolution import release_cached_vosr
-                cleanup=release_cached_vosr()
-        if cleanup is not None:
-            report["model_cleanup"]=cleanup
+        retired=upscaler=='VOSR2'
+        if retired:
+            upscaler='Comfy upscale model' if upscale_model is not None else 'None'
+            if upscaler=='None' and target=='Native model scale':target='Original'
+        enhanced,report = enhance_views(setup,views,enabled,crop,padding_percent,square_crop,target,
+            upscaler,mask_mode,foreground_masks,strength,vram_mode,None,upscale_model,seed,debug_preview,
+            bg_removal_model=bg_removal_model)
+        if retired:report['retired_upscaler_migration']=dict(previous='VOSR2',current=upscaler)
         if debug_preview:
             from PIL import Image
             imgs=[];masks=[]
@@ -72,3 +70,11 @@ class IntelligentViewEnhancer(io.ComfyNode):
         else:
             preview=torch.zeros((1,1,1,3));mask=torch.zeros((1,1,1))
         return io.NodeOutput(enhanced,restore_original(views),preview,mask,json.dumps(report,indent=2))
+
+    @classmethod
+    def validate_inputs(cls,upscaler):
+        return True if upscaler in ('None','Comfy upscale model','VOSR2') else 'Choose None or Comfy upscale model'
+
+    @classmethod
+    def check_lazy_status(cls,**kwargs):
+        return []  # The retired VOSR2 input never schedules its old model loader.

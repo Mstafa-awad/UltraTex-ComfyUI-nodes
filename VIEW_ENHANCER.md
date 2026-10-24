@@ -1,3 +1,5 @@
+> Historical release note. Current bake presets are Fast, Quality and Quality + edge repair; see README.md.
+
 # UTX 2.5 â€” Intelligent View Enhancer (TEST)
 
 Install this entire `comfyui_ultratex_modular` folder in ComfyUI/custom_nodes, replacing the previous folder after making a backup outside custom_nodes. Restart ComfyUI. No Torch/CUDA/driver/model upgrade is needed. Keep the supplied original ZIP for exact rollback. This package includes no checkpoints.

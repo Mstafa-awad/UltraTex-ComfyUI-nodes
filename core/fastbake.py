@@ -552,6 +552,8 @@ class ViewInput:
     transform: object = None   # optional ImageTransform; depth always stays original
     normal_ref: object = None
     normal_rotation: object = None
+    source_ref: object = None
+    source_mask_ref: object = None
 
 
 def collect_views(collection):
@@ -564,7 +566,9 @@ def collect_views(collection):
                                    np.asarray(vs.plan.matrices[vi], np.float64), vs.images[vi], vs.masks[vi],
                                    vs.gbuffer.depths[vi], vs.sampling[vi] if vs.sampling else None,
                                    vs.gbuffer.normals[vi],np.asarray(vs.plan.rotation,np.float32).T @
-                                   GLTF_TO_BLENDER.T @ np.diag([1,1,-1]).astype(np.float32)))
+                                   GLTF_TO_BLENDER.T @ np.diag([1,1,-1]).astype(np.float32),
+                                   vs.original_images[vi] if vs.original_images else vs.images[vi],
+                                   vs.original_masks[vi] if vs.original_masks else vs.masks[vi]))
     return views
 
 
@@ -684,7 +688,7 @@ def _edge_weight(depth_t, S, torch):
     return w.reshape(-1).contiguous(), dist == 0
 
 
-def prepare_view(view: ViewInput, semantic, device, detail=False, complete_mips=False, stream=False,surface_guard=False):
+def prepare_view(view: ViewInput, semantic, device, detail=False, complete_mips=False, stream=False,surface_guard=False,edge_margin=0,front_protection=None,cross_views=None,cross_gains=None,colour_guard=False,colour_views=None):
     """detail=True also attaches the detail-mode data (Base Color only); fuse_views attaches it
     lazily per view instead, so the gains pass and the view cache stay as light as before."""
     torch = _torch()
@@ -734,7 +738,63 @@ def prepare_view(view: ViewInput, semantic, device, detail=False, complete_mips=
     if valid is None:
         valid = (np.asarray(mask, np.float32) > 0.5).astype(np.float32)
     valid_t = torch.from_numpy(valid).to(device) * (~edge_px).to(torch.float32)
+    excluded=0
+    confirmation={}
+    colour_geometry=None
+    if edge_margin>0 and semantic=='base_color':
+        from .sourceedges import selective_band,selective_bands,mask_rows
+        if edge_margin>=6 and front_protection is not None:
+            if cross_views is not None:
+                legacy,invalid,seeds=selective_bands(depth_t,view.normal_ref,view.source_ref,view.source_mask_ref,edge_size,edge_margin,torch,with_geometry=True)
+                if colour_guard:colour_geometry=seeds.cpu().numpy()
+            else:
+                legacy,invalid=selective_bands(depth_t,view.normal_ref,view.source_ref,view.source_mask_ref,edge_size,edge_margin,torch)
+            from .frontprotect import visible_source
+            protected=visible_source(depth_t,view.matrix,front_protection,edge_size,torch,source_view=view,candidates=invalid)
+            # Never restore a sample that the accepted v3 already rejected.
+            invalid=legacy | (invalid & ~protected)
+            candidate=seeds&~invalid if cross_views is not None else invalid&protected&~legacy
+            if cross_views is not None:
+                from .photoconsistency import confirm
+                import torch.nn.functional as F
+                confirmed,confirmation=confirm(view,cross_views,candidate,torch,gains=cross_gains)
+                # Cover one original-pixel reconstruction/ringing footprint,
+                # restricted to foreground geometric-edge candidates.
+                confirmed=(F.max_pool2d(confirmed.float()[None,None],3,1,1)[0,0]>.5)&seeds
+                confirmation['rejection_with_one_pixel_support']=int(confirmed.sum())
+                invalid|=confirmed
+                del confirmed,seeds
+            del candidate
+            del protected,legacy
+        else:
+            seeds=[] if cross_views is not None else None
+            invalid=selective_band(depth_t,view.normal_ref,view.source_ref,view.source_mask_ref,edge_size,edge_margin,torch,_geometry_capture=seeds)
+            if cross_views is not None:
+                from .photoconsistency import confirm
+                invalid,confirmation=confirm(view,cross_views,seeds[0] if seeds else invalid,torch,gains=cross_gains)
+                del seeds
+        excluded=mask_rows(valid_t,invalid,tr,torch)
+        if cross_views is not None:
+            # A normalised colour filter can still return a neighbouring valid
+            # sample across a masked pixel. Rejection must also affect the
+            # original-camera confidence, otherwise that extrapolated colour
+            # keeps the full facing score and defeats clean alternative views.
+            edge_w.masked_fill_(invalid.reshape(-1),0)
+        del invalid
+        import os
+        if depth_t.device.type=='cuda' and os.environ.get('UTX_EDGE_VRAM_MODE','strict')!='fast':
+            # Strict mode keeps analysis scratch out of the peak reservation.
+            torch.cuda.empty_cache()
+    colour_adjuster=None
+    if colour_guard and semantic=='base_color':
+        from .srcolour import prepare as prepare_colour
+        colour_adjuster=prepare_colour(view,depth_t,torch,colour_geometry,others=colour_views)
+        del colour_geometry
+        if depth_t.device.type=='cuda':torch.cuda.empty_cache()
     if not stream:
+        if colour_adjuster is not None:
+            for row in range(0,S,256):colour_adjuster.apply(rgb[row:row+256],row,S,tr)
+            data=srgb_to_linear_np(rgb)
         data_t = torch.from_numpy(np.ascontiguousarray(data.transpose(2, 0, 1))).to(device)
         image_t = torch.cat([data_t * valid_t[None], valid_t[None]], 0)[None].contiguous()
     else:
@@ -743,13 +803,16 @@ def prepare_view(view: ViewInput, semantic, device, detail=False, complete_mips=
         channels=3 if semantic=="base_color" else 2
         image_t=torch.empty((1,channels+1,S,S),dtype=torch.float32,device=device)
         image_t[0,-1]=valid_t
-        for row in range(0,S,256):
-            stop=min(S,row+256)
-            rgb=image[row:stop,:,:3].astype(np.float32)/(255. if image.dtype==np.uint8 else 1.)
+        def block(row):
+            rgb=image[row:min(S,row+256),:,:3].astype(np.float32)/(255. if image.dtype==np.uint8 else 1.)
+            if colour_adjuster is not None:colour_adjuster.apply(rgb,row,S,tr)
             data=srgb_to_linear_np(rgb) if semantic=="base_color" else rgb[...,1:3]
-            data_t=torch.from_numpy(np.ascontiguousarray(data.transpose(2,0,1))).to(device)
-            image_t[0,:channels,row:stop]=data_t*valid_t[None,row:stop]
-        del rgb,data,data_t
+            return row,np.ascontiguousarray(data.transpose(2,0,1))
+        # Blocks are independent; the CPU conversion of several overlaps while the main thread uploads in order.
+        from .cpu import ordered_map
+        for row,data in ordered_map(block,range(0,S,256)):
+            image_t[0,:channels,row:row+data.shape[1]]=torch.from_numpy(data).to(device)*valid_t[None,row:row+data.shape[1]]
+        del data
     # Mask-normalised mip levels: used when one atlas texel covers several view pixels.
     import torch.nn.functional as F
     levels = [image_t]
@@ -767,6 +830,10 @@ def prepare_view(view: ViewInput, semantic, device, detail=False, complete_mips=
                       torch.tensor(center, dtype=torch.float32, device=device),
                       depth_t.reshape(-1).contiguous(), R, levels, S, edge_w,
                       float(valid.mean()), transform=tr, edge_size=edge_size)
+    pv.source_edge_excluded_pixels=excluded
+    pv.source_confirmation=confirmation
+    pv.source_colour_guard_pixels=colour_adjuster.corrected_pixels if colour_adjuster is not None else 0
+    pv.source_colour_consensus=colour_adjuster.consensus_stats if colour_adjuster is not None else {}
     if detail and semantic == "base_color":
         attach_detail(pv)
     if surface_guard:
@@ -895,6 +962,21 @@ def _project(geo, view: PreparedView, torch, detail=False, with_footprint=False,
         return (colour_out, q_out) if extra_out is None else (colour_out, q_out, extra_out)
     Pc, zd, inv, u, v, cos = Pc[idx], zd[idx], inv[idx], u[idx], v[idx], cos[idx]
     Ng = geo.Ng[idx]
+    quality_facing=1.
+    if getattr(view,'geometric_grazing_quality',False):
+        # Smooth lighting normals can face a camera while the actual triangle
+        # is almost edge-on. Only that grazing band is downweighted; camera
+        # choice and samples above a geometric cosine of .2 stay unchanged.
+        direction=to_cam[idx]
+        alignment=torch.where((Ng*geo.Ns[idx]).sum(1)<0,-1.,1.)
+        geometric_cos=(Ng*direction).sum(1)*alignment/direction.norm(dim=1).clamp_min(1e-9)
+        t=(geometric_cos/.2).clamp(0,1)
+        quality_facing=t*t*(3-2*t)
+        # Only the scalar facing weight is used below. Release the extra
+        # vector temporaries before allocating the filter/sampling scratch.
+        import os
+        if os.environ.get('UTX_EDGE_VRAM_MODE','strict')=='fast':
+            del direction,alignment,geometric_cos,t,to_cam
     A = geo.A[idx]
     R = view.R
     x = u * R - 0.5
@@ -951,7 +1033,7 @@ def _project(geo, view: PreparedView, torch, detail=False, with_footprint=False,
         from .surfacefilter import sample as guarded_sample
         guard_E=view.edge_size or view.S
         guard_x=(original_u*guard_E).floor().clamp(0,guard_E-1).long();guard_y=(original_v*guard_E).floor().clamp(0,guard_E-1).long()
-        hint=cos.clamp(0,1)*vis*view.edge_w[guard_y*guard_E+guard_x]
+        hint=cos.clamp(0,1)*vis*view.edge_w[guard_y*guard_E+guard_x]*quality_facing
         sample,guarded=guarded_sample(view,Pc,Ng,geo.Ns[idx],original_u,original_v,u,v,footprint,sample,torch,q_hint=hint)
     alpha = sample[:, -1]
     colour = sample[:, :-1] / alpha.clamp_min(1e-4)[:, None]
@@ -960,7 +1042,7 @@ def _project(geo, view: PreparedView, torch, detail=False, with_footprint=False,
     xs = (original_u * E).floor().clamp(0, E - 1).long()
     ys = (original_v * E).floor().clamp(0, E - 1).long()
     edge = view.edge_w[ys * E + xs]
-    q = torch.where(alpha > 0.05, cos.clamp(0, 1) * vis * edge, torch.zeros_like(vis))
+    q = torch.where(alpha > 0.05, cos.clamp(0, 1) * vis * edge * quality_facing, torch.zeros_like(vis))
     if view.transform is not None:
         tr = view.transform
         within = ((u*S >= tr.pad_left) & (u*S < tr.pad_left+tr.resized_width) &
@@ -1282,7 +1364,7 @@ def surface_lowpass(surface, values, weights, iterations=3):
 # completion
 # --------------------------------------------------------------------------------------
 
-def _vertex_field(surface, colour, alpha):
+def _vertex_field(surface, colour, alpha, device=None):
     """Harmonic surface fill on welded vertices. Returns (Vw,C) values + stats."""
     from scipy.sparse import diags
     from scipy.sparse.linalg import spsolve
@@ -1338,11 +1420,17 @@ def _vertex_field(surface, colour, alpha):
                 sol = np.asarray(sol).reshape(U.size, C)
                 stats["solver"] = "superlu"
             else:
-                pre = diags(1.0 / np.maximum(deg, 1e-12))
-                from .cpu import solve_cg_columns
-                sol, workers = solve_cg_columns(L, rhs, pre)
-                stats["solver"] = "cg"
-                stats["independent_channel_workers"] = workers
+                inverse_diagonal = 1.0 / np.maximum(deg, 1e-12)
+                if device is not None and getattr(device, "type", "cpu") == "cuda":
+                    from .gpu_solve import solve_cg_columns_gpu
+                    sol, iterations = solve_cg_columns_gpu(L, rhs, inverse_diagonal, device)
+                    stats["solver"] = "cg (cuda, float64)"
+                    stats["cg_iterations"] = int(iterations)
+                else:
+                    from .cpu import solve_cg_columns
+                    sol, workers = solve_cg_columns(L, rhs, diags(inverse_diagonal))
+                    stats["solver"] = "cg"
+                    stats["independent_channel_workers"] = workers
             x[U] = sol
         stats["solved_vertices"] = int(U.size)
     return x, stats
@@ -1382,7 +1470,7 @@ def complete_texels(surface, colour, alpha, device, band=BLEND_BAND, iterations=
     t0 = time.perf_counter()
     colour = np.asarray(colour, np.float32)
     alpha = np.asarray(alpha, np.float32)
-    x, stats = _vertex_field(surface, colour, alpha)
+    x, stats = _vertex_field(surface, colour, alpha, device)
     t1 = time.perf_counter()
     strong = alpha >= 1.0 - 1e-6
     free_idx = np.flatnonzero(~strong)
@@ -1514,13 +1602,13 @@ def _estimate_bytes(n_texels, max_depth_px, max_image_px, chunk=1 << 20, detail=
 
 
 def bake_branch(surface, collection, semantic, device, completion=True, harmonize=True, timer=None,
-                detail=False, consistent=False, source_sharp=False, patch_guide=None, anchor=False, exact_support=False):
+                detail=False, consistent=False, source_sharp=False, patch_guide=None, anchor=False, exact_support=False,edge_margin=0,anchor_fast=False):
     """Bake one semantic ('base_color' or 'mr') from a view collection on a shared surface.
     detail=True (Base Color only) uses cubic reconstruction + a near single-camera fine band;
     visibility, confidence, coverage and completion are identical to the standard path."""
     if anchor and semantic == 'base_color':
         from .sourceanchor import bake
-        return bake(surface,collection,device,completion,timer,exact_support=exact_support)
+        return bake(surface,collection,device,completion,timer,exact_support=exact_support,edge_margin=edge_margin,fast=anchor_fast)
     if patch_guide is not None and semantic == 'base_color':
         from .patchbake import bake
         return bake(surface,collection,device,patch_guide,completion,timer)
@@ -1614,7 +1702,7 @@ def bake_branch(surface, collection, semantic, device, completion=True, harmoniz
 
 
 def bake_surface_maps(albedo_setup, albedo_views, size, completion=True, mr_setup=None, mr_views=None,
-                      device_preference="auto", harmonize=True, detail=False, consistent=False, source_sharp=False, coherent=False, anchor=False, exact_support=False):
+                      device_preference="auto", harmonize=True, detail=False, consistent=False, source_sharp=False, coherent=False, anchor=False, exact_support=False,edge_margin=0,anchor_fast=False):
     """Bake Base Color (+ Roughness/Metallic) atlases. Returns (maps, coverage, report).
     detail=True applies the detail-preserving reconstruction/fusion to Base Color only;
     Roughness/Metallic always use the standard path (scalar material data)."""
@@ -1676,7 +1764,7 @@ def bake_surface_maps(albedo_setup, albedo_views, size, completion=True, mr_setu
         maps = {}
         with torch.inference_mode():
             base, alpha, stats = bake_branch(surface, albedo_views, "base_color", dev, completion, harmonize, timer,
-                                             detail=detail, consistent=consistent, source_sharp=source_sharp,patch_guide=patch_guide,anchor=anchor,exact_support=exact_support)
+                                             detail=detail, consistent=consistent, source_sharp=source_sharp,patch_guide=patch_guide,anchor=anchor,exact_support=exact_support,edge_margin=edge_margin,anchor_fast=anchor_fast)
             report["base_color"] = stats
             maps["base_color"] = to_atlas(surface, base, fill_gutter=True)
             coverage = coverage_atlas(surface, alpha)

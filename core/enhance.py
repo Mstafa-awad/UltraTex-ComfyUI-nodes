@@ -32,6 +32,17 @@ def bounds(mask, padding=3., square=True, align_mips=True):
     return x0, y0, x1-x0, y1-y0
 
 
+def _to_half(rgb, rows=512):
+    """[0,1] float RGB -> float16, in row blocks (no second full-size float32 temporary).
+
+    Enhanced crops are up to 8192^2 pixels: 768 MiB as float32. Half precision keeps 11 significant bits (8x finer
+    than the 8-bit textures the bake writes), so the bake's decisions match the float32 result almost everywhere."""
+    out = np.empty(rgb.shape, np.float16)
+    for row in range(0, len(rgb), rows):
+        out[row:row+rows] = np.clip(rgb[row:row+rows], 0, 1)
+    return out
+
+
 def make_transform(shape, box, target="Original"):
     h, w = shape[:2]
     x,y,cw,ch = box
@@ -109,8 +120,7 @@ def enhance_views(setup, collection, enabled=False, crop=True, padding=3., squar
     if bg_removal_model is not None and getattr(bg_removal_model,"model_type",None) != "birefnet":
         raise ValueError("The optional background-removal model must be BiRefNet")
     if upscaler == "VOSR2" and runner is None:
-        from .super_resolution import VOSRRunner
-        runner = VOSRRunner(vosr_model,vram_mode)
+        raise ValueError("VOSR2 is retired. Use the connected Comfy upscale model (for example your existing RealESR checkpoint).")
     if upscaler == "Comfy upscale model" and runner is None:
         from .super_resolution import ComfyUpscaleRunner
         runner = ComfyUpscaleRunner(upscale_model)
@@ -193,10 +203,12 @@ def enhance_views(setup, collection, enabled=False, crop=True, padding=3., squar
                     enhanced = np.clip(enhanced,0,1)
             else:
                 enhanced,details = base,{"ai":False}
-            key = fingerprint("enhance-v1",ref,vs.masks[vi],asdict(tr),upscaler,strength,seed+cursor-1,
+            if enhanced.dtype not in (np.uint8, np.float16):
+                enhanced = _to_half(enhanced)
+            key = fingerprint("enhance-v3",ref,vs.masks[vi],asdict(tr),upscaler,strength,seed+cursor-1,
                               getattr(runner,"identity",None),fingerprint(enhanced))
             images[vi] = store.put(enhanced,key)
-            masks[vi] = store.put(mask)
+            masks[vi] = store.put(mask.astype(np.float16))  # soft [0,1] edge; half precision is ample
             transforms.append(tr)
             entry=dict(details)
             entry.update(rig=len(sets),view=vi,transform=asdict(tr),

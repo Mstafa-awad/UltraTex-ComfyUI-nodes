@@ -1,3 +1,5 @@
+> Historical release note. Current bake presets are Fast, Quality and Quality + edge repair; see README.md.
+
 # View 0 anchor TEST, v2.2.0rc3
 
 In UTX 3 choose `upscale_mode=sharp_anchor` and `completion=surface_fill`.

@@ -87,6 +87,9 @@ class TextureSetup:
     gbuffers: tuple[GBuffer, ...]
     reference: Reference
     runtime: RuntimePolicy
+    # Optional pictures for other views of the first (0-degree) rig: ((view_index, Reference), ...), view_index 1..5.
+    extra_references: tuple = ()
+    view_reference_strength: float = 0.5   # share of the first-pass sampling steps those views are held to their picture
 
     def _comfy_cache_tensors(self):
         return self.context._comfy_cache_tensors()
@@ -130,6 +133,7 @@ class TokenPack:
     grid_w: int
     init_tokens: ArrayRef | None = None
     keep_weights: ArrayRef | None = None
+    keep_steps: int = -1      # hold keep_weights for this many sampling steps; -1 = every step (guided 45-degree pass)
 
     @property
     def target_count(self):
