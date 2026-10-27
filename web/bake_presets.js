@@ -1,9 +1,10 @@
 import { app } from "../../scripts/app.js";
 
 const aliases = {
-    fast_detail: "Fast", off_direct: "Fast", detail_consistent: "Quality",
+    fast_detail: "Quality", off_direct: "Fast", detail_consistent: "Quality",
     sharp_source: "Quality", sharp_coherent: "Quality", sharp_anchor: "Quality",
     sharp_anchor_v2: "Quality", sharp_anchor_v3: "Quality", sharp_anchor_v4: "Quality",
+    "Sharp anchor": "Quality", "Quality + edge repair": "Quality",
 };
 
 export function migrateBakeNode(info) {

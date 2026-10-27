@@ -190,7 +190,7 @@ class ApplyTextureLora(io.ComfyNode):
         return schema("UTXApplyTextureLora","Apply Texture LoRA",[io.Model.Input("model"),
             io.Combo.Input("lora_name",options=folder_paths.get_filename_list("loras")),
             io.Combo.Input("task",options=["albedo","mr"],default="albedo"),
-            io.Float.Input("strength",default=1.,min=0.,max=2.,step=.05)],
+            io.Float.Input("strength",default=1.,min=0.,max=10.,step=.05)],
             [io.Model.Output(),INFO.Output(),REPORT.Output()],"Use released Klein base 9B UltraTex PEFT weights. Known adapter fingerprints and explicit filenames are checked against albedo/MR before execution.")
 
     @classmethod
@@ -297,12 +297,12 @@ class SampleLatents(io.ComfyNode):
     @classmethod
     def define_schema(cls):
         return schema("UTXSampleLatents","Sample Latents",[io.Model.Input("model"),WORKSET.Input("workset"),POLICY.Input("runtime"),
-            io.Int.Input("steps",default=25,min=1,max=100),io.Float.Input("guidance",default=4.,min=0.,max=20.,step=.1),
+            io.Int.Input("steps",default=4,min=1,max=100),io.Float.Input("guidance",default=4.,min=0.,max=20.,step=.1),
             io.Float.Input("denoise",default=1.,min=0.,max=1.,step=.01),
             io.Combo.Input("backend",options=["sparse","dense_debug"],default="sparse"),
             io.Float.Input("sparse_retention",default=.2,min=.01,max=1.,step=.01),
             io.Model.Input("material_model",optional=True)],[SAMPLES.Output(),REPORT.Output()],
-            "Sampling only. One model-manager request per task group; sequential CFG. Sparse failures are explicit. Optional MR model must share the same backbone loader. Fewer than 10 steps is a preview for undistilled base 9B.")
+            "Sampling only. One model-manager request per task group; sequential CFG. Sparse failures are explicit. Optional MR model must share the same backbone loader.")
 
     @classmethod
     def execute(cls,model,workset,runtime,steps,guidance,denoise,backend,sparse_retention,material_model=None):
@@ -443,7 +443,7 @@ class ProbeGGUFLoRAMemory(io.ComfyNode):
             [io.Model.Input("model", tooltip="Connect the original Unet Loader (GGUF) MODEL, BEFORE any LoRA."),
              io.Combo.Input("lora_name", options=folder_paths.get_filename_list("loras")),
              io.Combo.Input("task", options=["albedo", "mr"], default="albedo"),
-             io.Float.Input("strength", default=1., min=0.05, max=2., step=0.05),
+             io.Float.Input("strength", default=1., min=0.05, max=10., step=0.05),
              io.Int.Input("test_layers", default=3, min=1, max=8)],
             [io.String.Output(display_name="results"),
              io.String.Output(display_name="json_report_path"),

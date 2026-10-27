@@ -1,0 +1,1785 @@
+{
+  "id": "f7749806-b939-422e-b542-124219e62cd6",
+  "revision": 0,
+  "last_node_id": 85,
+  "last_link_id": 133,
+  "nodes": [
+    {
+      "id": 3,
+      "type": "LoadImage",
+      "pos": [
+        -333.8304599707311,
+        529.220219887697
+      ],
+      "size": [
+        330,
+        105
+      ],
+      "flags": {},
+      "order": 0,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "slot_index": 0,
+          "links": [
+            82,
+            85
+          ]
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "slot_index": 1,
+          "links": []
+        }
+      ],
+      "title": "Select your reference image",
+      "properties": {
+        "Node name for S&R": "LoadImage"
+      },
+      "widgets_values": [
+        "",
+        "image"
+      ]
+    },
+    {
+      "id": 5,
+      "type": "UnetLoaderGGUF",
+      "pos": [
+        861.017616155498,
+        588.0013885203828
+      ],
+      "size": [
+        330,
+        105
+      ],
+      "flags": {},
+      "order": 1,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "MODEL",
+          "type": "MODEL",
+          "slot_index": 0,
+          "links": [
+            23,
+            66
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "UnetLoaderGGUF"
+      },
+      "widgets_values": [
+        "flux-2-klein-base-9b-Q4_0.gguf"
+      ]
+    },
+    {
+      "id": 6,
+      "type": "VAELoader",
+      "pos": [
+        841.8739510571603,
+        853.0646950221778
+      ],
+      "size": [
+        330,
+        105
+      ],
+      "flags": {},
+      "order": 2,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "VAE",
+          "type": "VAE",
+          "slot_index": 0,
+          "links": [
+            9,
+            24
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "VAELoader"
+      },
+      "widgets_values": [
+        "flux2-vae.safetensors"
+      ]
+    },
+    {
+      "id": 7,
+      "type": "CLIPLoaderGGUF",
+      "pos": [
+        50.71729527164257,
+        965.1142074228128
+      ],
+      "size": [
+        330,
+        135
+      ],
+      "flags": {},
+      "order": 3,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "CLIP",
+          "type": "CLIP",
+          "slot_index": 0,
+          "links": [
+            10,
+            48
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "CLIPLoaderGGUF"
+      },
+      "widgets_values": [
+        "Qwen3-8B-Q6_K.gguf",
+        "flux2"
+      ]
+    },
+    {
+      "id": 8,
+      "type": "UTXTextEncode",
+      "pos": [
+        480,
+        920
+      ],
+      "size": [
+        330,
+        127
+      ],
+      "flags": {
+        "collapsed": true
+      },
+      "order": 8,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 10
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "slot_index": 0,
+          "links": [
+            11,
+            25
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "UTXTextEncode"
+      },
+      "widgets_values": [
+        ""
+      ]
+    },
+    {
+      "id": 9,
+      "type": "UTXGenerateTextureViewsV23",
+      "pos": [
+        1419.7309747402417,
+        62.71108515282421
+      ],
+      "size": [
+        360.4712890625,
+        557.9999574347983
+      ],
+      "flags": {},
+      "order": 14,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "source",
+          "type": "UTX_PREPARED_SOURCE_V23",
+          "link": 81
+        },
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 66
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 9
+        },
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "link": 11
+        },
+        {
+          "name": "negative",
+          "shape": 7,
+          "type": "CONDITIONING",
+          "link": 50
+        }
+      ],
+      "outputs": [
+        {
+          "name": "UTX_VIEW_COLLECTION",
+          "type": "UTX_VIEW_COLLECTION",
+          "links": [
+            14,
+            123
+          ]
+        },
+        {
+          "name": "all_views_512",
+          "type": "IMAGE",
+          "links": []
+        },
+        {
+          "name": "contact_sheet",
+          "type": "IMAGE",
+          "links": [
+            15
+          ]
+        },
+        {
+          "name": "generation_setup_to_bake",
+          "type": "UTX_TEXTURE_SETUP",
+          "links": [
+            60,
+            125
+          ]
+        }
+      ],
+      "title": "2. Generate | resolution + views controlled HERE",
+      "properties": {
+        "Node name for S&R": "UTXGenerateTextureViews"
+      },
+      "widgets_values": [
+        "ultratex_flux2.safetensors",
+        1.0,
+        "ultratex_flux2_decoder.pt",
+        "albedo",
+        2048,
+        10,
+        0,
+        "fixed",
+        4,
+        4,
+        1,
+        0.2,
+        "guided",
+        1.0,
+        4,
+        true,
+        0.0,
+        4,
+        true,
+        "auto"
+      ]
+    },
+    {
+      "id": 10,
+      "type": "PreviewImage",
+      "pos": [
+        1942.5324001729027,
+        518.4959123661176
+      ],
+      "size": [
+        330,
+        100
+      ],
+      "flags": {},
+      "order": 20,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 15
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "slot_index": 0,
+          "links": []
+        }
+      ],
+      "title": "All generated views",
+      "properties": {
+        "Node name for S&R": "PreviewImage"
+      }
+    },
+    {
+      "id": 11,
+      "type": "UTXSaveViews",
+      "pos": [
+        1927.0406091073378,
+        848.2231408733747
+      ],
+      "size": [
+        330,
+        127
+      ],
+      "flags": {},
+      "order": 19,
+      "mode": 2,
+      "inputs": [
+        {
+          "name": "views",
+          "type": "UTX_VIEW_COLLECTION",
+          "link": 14
+        }
+      ],
+      "outputs": [
+        {
+          "name": "manifest_path",
+          "type": "STRING",
+          "slot_index": 0,
+          "links": []
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "UTXSaveViews"
+      },
+      "widgets_values": [
+        "ultratex_views"
+      ]
+    },
+    {
+      "id": 13,
+      "type": "SaveGLB",
+      "pos": [
+        4253.341845714765,
+        -57.07225961852686
+      ],
+      "size": [
+        364.38444520466487,
+        509.2190037401688
+      ],
+      "flags": {},
+      "order": 28,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "mesh",
+          "type": "MESH,FILE_3D_GLB,FILE_3D_GLTF,FILE_3D_OBJ,FILE_3D_FBX,FILE_3D_STL,FILE_3D_USDZ,FILE_3D_PLY,FILE_3D_SPLAT,FILE_3D_SPZ,FILE_3D_KSPLAT,FILE_3D_SPLAT_ANY,FILE_3D_POINT_CLOUD_ANY,FILE_3D",
+          "link": 133
+        }
+      ],
+      "outputs": [],
+      "properties": {
+        "Node name for S&R": "SaveGLB",
+        "Last Time Model File": "ultratex/textured_00001_.glb",
+        "Last Time Model Folder": "output",
+        "Camera Config": {
+          "cameraType": "perspective",
+          "fov": 35,
+          "state": {
+            "position": {
+              "x": 5.773097804315912,
+              "y": 6.714747410340253,
+              "z": 3.157985909346439
+            },
+            "target": {
+              "x": 0,
+              "y": 2.5,
+              "z": 0
+            },
+            "zoom": 1,
+            "cameraType": "perspective",
+            "quaternion": {
+              "x": -0.24171654389761557,
+              "y": 0.4894000907926626,
+              "z": 0.14329424681330744,
+              "w": 0.8255467414801736
+            },
+            "fov": 35,
+            "aspect": 0.7816091954022989,
+            "near": 0.01,
+            "far": 10000,
+            "frustum": {
+              "left": -5,
+              "right": 5,
+              "top": 5,
+              "bottom": -5
+            }
+          }
+        },
+        "Light Config": {
+          "intensity": 0.5033164800000004,
+          "hdri": {
+            "enabled": false,
+            "hdriPath": "",
+            "showAsBackground": false,
+            "intensity": 1
+          }
+        },
+        "Scene Config": {
+          "showGrid": true,
+          "backgroundColor": "#282828",
+          "backgroundImage": "",
+          "backgroundRenderMode": "tiled",
+          "models": [
+            {
+              "position": {
+                "x": 0,
+                "y": 0,
+                "z": 0
+              },
+              "quaternion": {
+                "x": 0,
+                "y": 0,
+                "z": 0,
+                "w": 1
+              },
+              "scale": {
+                "x": 1,
+                "y": 1,
+                "z": 1
+              }
+            }
+          ]
+        },
+        "Model Config": {
+          "upDirection": "original",
+          "materialMode": "original",
+          "showSkeleton": false,
+          "gizmo": {
+            "enabled": false,
+            "mode": "translate",
+            "position": {
+              "x": 0,
+              "y": 0,
+              "z": 0
+            },
+            "rotation": {
+              "x": 0,
+              "y": 0,
+              "z": 0
+            },
+            "scale": {
+              "x": 1,
+              "y": 1,
+              "z": 1
+            }
+          }
+        }
+      },
+      "widgets_values": [
+        "ultratex/textured",
+        ""
+      ]
+    },
+    {
+      "id": 15,
+      "type": "Note",
+      "pos": [
+        -119.78710604746902,
+        -351.21097562191846
+      ],
+      "size": [
+        900,
+        280
+      ],
+      "flags": {},
+      "order": 4,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "properties": {},
+      "widgets_values": [
+        "General workflow. Choose your mesh and reference. Four steps, denoise 1, fast decode. Node 2.5 upscales all active views. Original six-view reconstruction supplies the base; extra four/six views fill only its holes. No material mask or grain crop. Fast and Quality only. LoRA strength remains the original direct multiplier."
+      ],
+      "color": "#432",
+      "bgcolor": "#653"
+    },
+    {
+      "id": 20,
+      "type": "UTXGenerateTextureViewsV23",
+      "pos": [
+        1405.9546788761343,
+        705.5331951055439
+      ],
+      "size": [
+        359.7740234375,
+        558.0000215699258
+      ],
+      "flags": {},
+      "order": 13,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "source",
+          "type": "UTX_PREPARED_SOURCE_V23",
+          "link": 47
+        },
+        {
+          "name": "model",
+          "type": "MODEL",
+          "link": 23
+        },
+        {
+          "name": "vae",
+          "type": "VAE",
+          "link": 24
+        },
+        {
+          "name": "positive",
+          "type": "CONDITIONING",
+          "link": 25
+        },
+        {
+          "name": "negative",
+          "shape": 7,
+          "type": "CONDITIONING",
+          "link": 49
+        }
+      ],
+      "outputs": [
+        {
+          "name": "UTX_VIEW_COLLECTION",
+          "type": "UTX_VIEW_COLLECTION",
+          "links": [
+            130
+          ]
+        },
+        {
+          "name": "all_views_512",
+          "type": "IMAGE",
+          "links": []
+        },
+        {
+          "name": "contact_sheet",
+          "type": "IMAGE",
+          "links": [
+            27
+          ]
+        },
+        {
+          "name": "generation_setup_to_bake",
+          "type": "UTX_TEXTURE_SETUP",
+          "links": [
+            61
+          ]
+        }
+      ],
+      "title": "2B. Materials: 6-view MR pass (same resolution)",
+      "properties": {
+        "Node name for S&R": "UTXGenerateTextureViewsV23"
+      },
+      "widgets_values": [
+        "ultratex_flux2_mr.safetensors",
+        1.0,
+        "ultratex_flux2_decoder.pt",
+        "mr",
+        2048,
+        6,
+        0,
+        "fixed",
+        4,
+        4,
+        1,
+        0.2,
+        "independent",
+        1.0,
+        4,
+        true,
+        0.0,
+        4,
+        true,
+        "auto"
+      ]
+    },
+    {
+      "id": 21,
+      "type": "PreviewImage",
+      "pos": [
+        1818.2136190218803,
+        1017.474769811003
+      ],
+      "size": [
+        320,
+        185
+      ],
+      "flags": {
+        "collapsed": false
+      },
+      "order": 18,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 27
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "links": []
+        }
+      ],
+      "title": "MR generated views",
+      "properties": {
+        "Node name for S&R": "PreviewImage"
+      }
+    },
+    {
+      "id": 40,
+      "type": "PreviewImage",
+      "pos": [
+        999.5254251963997,
+        -312.1722956392134
+      ],
+      "size": [
+        320,
+        185
+      ],
+      "flags": {},
+      "order": 15,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 42
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "links": []
+        }
+      ],
+      "title": "Actual 6 RGB normal views (preview)",
+      "properties": {
+        "Node name for S&R": "PreviewImage"
+      }
+    },
+    {
+      "id": 41,
+      "type": "PreviewImage",
+      "pos": [
+        1357.984066587239,
+        -334.20087655807026
+      ],
+      "size": [
+        320,
+        185
+      ],
+      "flags": {},
+      "order": 16,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 43
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "links": []
+        }
+      ],
+      "title": "Aligned colored reference (preview)",
+      "properties": {
+        "Node name for S&R": "PreviewImage"
+      }
+    },
+    {
+      "id": 42,
+      "type": "MaskToImage",
+      "pos": [
+        1726.3404639828614,
+        -333.19255885797327
+      ],
+      "size": [
+        320,
+        185
+      ],
+      "flags": {},
+      "order": 17,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "mask",
+          "type": "MASK",
+          "link": 44
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            21
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MaskToImage"
+      }
+    },
+    {
+      "id": 43,
+      "type": "PreviewImage",
+      "pos": [
+        2115.7946731008774,
+        -382.52468907747823
+      ],
+      "size": [
+        320,
+        185
+      ],
+      "flags": {},
+      "order": 22,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 21
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "links": []
+        }
+      ],
+      "title": "Aligned foreground mask (preview)",
+      "properties": {
+        "Node name for S&R": "PreviewImage"
+      }
+    },
+    {
+      "id": 44,
+      "type": "UTXUnwrapMeshUVV25",
+      "pos": [
+        350.9263285008463,
+        45.77154982113956
+      ],
+      "size": [
+        270,
+        106
+      ],
+      "flags": {},
+      "order": 10,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "mesh",
+          "type": "MESH",
+          "link": 75
+        }
+      ],
+      "outputs": [
+        {
+          "name": "uv_mesh",
+          "type": "MESH",
+          "links": [
+            38
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "UTXUnwrapMeshUVV25"
+      },
+      "widgets_values": [
+        4096,
+        "comfy_gpu",
+        16
+      ]
+    },
+    {
+      "id": 45,
+      "type": "UTXPrepareTextureV25",
+      "pos": [
+        807.2615912213494,
+        58.1481350477402
+      ],
+      "size": [
+        323.503515625,
+        306
+      ],
+      "flags": {},
+      "order": 12,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "mesh",
+          "type": "MESH",
+          "link": 38
+        },
+        {
+          "name": "reference",
+          "type": "IMAGE",
+          "link": 85
+        },
+        {
+          "name": "mask",
+          "shape": 7,
+          "type": "MASK",
+          "link": 84
+        },
+        {
+          "name": "runtime",
+          "shape": 7,
+          "type": "UTX_RUNTIME_POLICY",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "prepared_source",
+          "type": "UTX_PREPARED_SOURCE_V23",
+          "links": [
+            47,
+            81
+          ]
+        },
+        {
+          "name": "prepared_mesh",
+          "type": "MESH",
+          "links": null
+        },
+        {
+          "name": "normal_views_512",
+          "type": "IMAGE",
+          "links": [
+            42
+          ]
+        },
+        {
+          "name": "aligned_reference_512",
+          "type": "IMAGE",
+          "links": [
+            43
+          ]
+        },
+        {
+          "name": "aligned_mask_512",
+          "type": "MASK",
+          "links": [
+            44
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "UTXPrepareTextureV25"
+      },
+      "widgets_values": [
+        "center",
+        "foreground",
+        "auto_smooth",
+        4096,
+        "original",
+        0,
+        0,
+        1
+      ]
+    },
+    {
+      "id": 47,
+      "type": "UTXTextEncode",
+      "pos": [
+        465.44072838239134,
+        1004.4288944688147
+      ],
+      "size": [
+        330,
+        127
+      ],
+      "flags": {
+        "collapsed": true
+      },
+      "order": 9,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "clip",
+          "type": "CLIP",
+          "link": 48
+        }
+      ],
+      "outputs": [
+        {
+          "name": "CONDITIONING",
+          "type": "CONDITIONING",
+          "slot_index": 0,
+          "links": [
+            49,
+            50
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "UTXTextEncode"
+      },
+      "widgets_values": [
+        ""
+      ]
+    },
+    {
+      "id": 49,
+      "type": "UTXFastSurfaceTextureBaker",
+      "pos": [
+        3460.539283264483,
+        95.58236891156213
+      ],
+      "size": [
+        328.0357421875,
+        250
+      ],
+      "flags": {},
+      "order": 25,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "albedo_setup",
+          "type": "UTX_TEXTURE_SETUP",
+          "link": 60
+        },
+        {
+          "name": "albedo_views",
+          "type": "UTX_VIEW_COLLECTION",
+          "link": 129
+        },
+        {
+          "name": "mr_setup",
+          "shape": 7,
+          "type": "UTX_TEXTURE_SETUP",
+          "link": 61
+        },
+        {
+          "name": "mr_views",
+          "shape": 7,
+          "type": "UTX_VIEW_COLLECTION",
+          "link": 131
+        }
+      ],
+      "outputs": [
+        {
+          "name": "mesh",
+          "type": "MESH",
+          "links": [
+            132
+          ]
+        },
+        {
+          "name": "glb",
+          "type": "FILE_3D_GLB",
+          "links": null
+        },
+        {
+          "name": "base_color",
+          "type": "IMAGE",
+          "links": [
+            67
+          ]
+        },
+        {
+          "name": "roughness",
+          "type": "IMAGE",
+          "links": null
+        },
+        {
+          "name": "metallic",
+          "type": "IMAGE",
+          "links": null
+        },
+        {
+          "name": "observed_coverage",
+          "type": "MASK",
+          "links": null
+        },
+        {
+          "name": "report",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "UTXFastSurfaceTextureBaker"
+      },
+      "widgets_values": [
+        8192,
+        "Quality",
+        "auto"
+      ]
+    },
+    {
+      "id": 51,
+      "type": "PreviewImage",
+      "pos": [
+        3846.849500732712,
+        530.1355967269244
+      ],
+      "size": [
+        140,
+        26
+      ],
+      "flags": {},
+      "order": 27,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 67
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "PreviewImage"
+      }
+    },
+    {
+      "id": 53,
+      "type": "UTXLoadMeshV2",
+      "pos": [
+        -179.95222552749104,
+        44.19412435861014
+      ],
+      "size": [
+        487.29944431025547,
+        205.83748777603034
+      ],
+      "flags": {},
+      "order": 5,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "mesh",
+          "type": "MESH",
+          "links": [
+            75
+          ]
+        },
+        {
+          "name": "details",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "UTXLoadMeshV2"
+      },
+      "widgets_values": [
+        "(enter a custom path)",
+        "",
+        false,
+        ""
+      ]
+    },
+    {
+      "id": 61,
+      "type": "RemoveBackground",
+      "pos": [
+        353.95310376592994,
+        517.845053264658
+      ],
+      "size": [
+        181.705078125,
+        46
+      ],
+      "flags": {},
+      "order": 11,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "bg_removal_model",
+          "type": "BACKGROUND_REMOVAL",
+          "link": 83
+        },
+        {
+          "name": "image",
+          "type": "IMAGE",
+          "link": 82
+        }
+      ],
+      "outputs": [
+        {
+          "name": "mask",
+          "type": "MASK",
+          "links": [
+            84
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "RemoveBackground"
+      }
+    },
+    {
+      "id": 62,
+      "type": "LoadBackgroundRemovalModel",
+      "pos": [
+        60.56772167096398,
+        679.7746524431344
+      ],
+      "size": [
+        321.6919921875,
+        58
+      ],
+      "flags": {},
+      "order": 6,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "bg_model",
+          "type": "BACKGROUND_REMOVAL",
+          "links": [
+            83
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "LoadBackgroundRemovalModel"
+      },
+      "widgets_values": [
+        "birefnet.safetensors"
+      ]
+    },
+    {
+      "id": 68,
+      "type": "UTXCacheCleaner",
+      "pos": [
+        3882.5015531147,
+        88.48577410586952
+      ],
+      "size": [
+        330,
+        200
+      ],
+      "flags": {},
+      "order": 26,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "passthrough",
+          "shape": 7,
+          "type": "*",
+          "link": 132
+        }
+      ],
+      "outputs": [
+        {
+          "name": "passthrough",
+          "type": "MESH",
+          "links": [
+            133
+          ]
+        },
+        {
+          "name": "cache_size",
+          "type": "STRING",
+          "links": null
+        },
+        {
+          "name": "cleanup_report",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "UTXCacheCleaner"
+      },
+      "widgets_values": [
+        "delete_when_executed",
+        true
+      ]
+    },
+    {
+      "id": 69,
+      "type": "UTXIntelligentViewEnhancer",
+      "pos": [
+        2491.222226820677,
+        96.98128906530773
+      ],
+      "size": [
+        360,
+        480
+      ],
+      "flags": {},
+      "order": 23,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "setup",
+          "type": "UTX_TEXTURE_SETUP",
+          "link": 126
+        },
+        {
+          "name": "views",
+          "type": "UTX_VIEW_COLLECTION",
+          "link": 124
+        },
+        {
+          "name": "foreground_masks",
+          "shape": 7,
+          "type": "MASK",
+          "link": null
+        },
+        {
+          "name": "bg_removal_model",
+          "shape": 7,
+          "type": "BACKGROUND_REMOVAL",
+          "link": null
+        },
+        {
+          "name": "vosr2_model",
+          "shape": 7,
+          "type": "VOSR2_MODEL",
+          "link": null
+        },
+        {
+          "name": "upscale_model",
+          "shape": 7,
+          "type": "UPSCALE_MODEL",
+          "link": 101
+        }
+      ],
+      "outputs": [
+        {
+          "name": "enhanced_views",
+          "type": "UTX_VIEW_COLLECTION",
+          "links": [
+            128
+          ]
+        },
+        {
+          "name": "original_views",
+          "type": "UTX_VIEW_COLLECTION",
+          "links": null
+        },
+        {
+          "name": "preview_512",
+          "type": "IMAGE",
+          "links": []
+        },
+        {
+          "name": "foreground_512",
+          "type": "MASK",
+          "links": null
+        },
+        {
+          "name": "report",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "UTXIntelligentViewEnhancer"
+      },
+      "widgets_values": [
+        true,
+        true,
+        0,
+        false,
+        "geometry",
+        "Comfy upscale model",
+        "Native model scale",
+        1,
+        "Adaptive",
+        0,
+        false,
+        false
+      ]
+    },
+    {
+      "id": 70,
+      "type": "UpscaleModelLoader",
+      "pos": [
+        2088.6964629482923,
+        350.4428634025164
+      ],
+      "size": [
+        330,
+        80
+      ],
+      "flags": {},
+      "order": 7,
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "UPSCALE_MODEL",
+          "type": "UPSCALE_MODEL",
+          "links": [
+            101
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "UpscaleModelLoader"
+      },
+      "widgets_values": [
+        "realesr-general-x4v3.pth"
+      ]
+    },
+    {
+      "id": 82,
+      "type": "MemoryCleaner",
+      "pos": [
+        1913.2389664639804,
+        90.13767392383325
+      ],
+      "size": [
+        396.9693359375,
+        150
+      ],
+      "flags": {},
+      "order": 21,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "input_1",
+          "shape": 7,
+          "type": "*",
+          "link": 123
+        },
+        {
+          "name": "input_2",
+          "shape": 7,
+          "type": "*",
+          "link": 125
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output_1",
+          "type": "*",
+          "links": [
+            124
+          ]
+        },
+        {
+          "name": "output_2",
+          "type": "*",
+          "links": [
+            126
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MemoryCleaner"
+      },
+      "widgets_values": [
+        true,
+        true,
+        true,
+        true
+      ]
+    },
+    {
+      "id": 84,
+      "type": "MemoryCleaner",
+      "pos": [
+        2953.468009001377,
+        102.10000276578825
+      ],
+      "size": [
+        396.9693359375,
+        150
+      ],
+      "flags": {},
+      "order": 24,
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "input_1",
+          "shape": 7,
+          "type": "*",
+          "link": 128
+        },
+        {
+          "name": "input_2",
+          "shape": 7,
+          "type": "*",
+          "link": 130
+        }
+      ],
+      "outputs": [
+        {
+          "name": "output_1",
+          "type": "*",
+          "links": [
+            129
+          ]
+        },
+        {
+          "name": "output_2",
+          "type": "*",
+          "links": [
+            131
+          ]
+        }
+      ],
+      "properties": {
+        "Node name for S&R": "MemoryCleaner"
+      },
+      "widgets_values": [
+        true,
+        true,
+        true,
+        true
+      ]
+    }
+  ],
+  "links": [
+    [
+      9,
+      6,
+      0,
+      9,
+      2,
+      "VAE"
+    ],
+    [
+      10,
+      7,
+      0,
+      8,
+      0,
+      "CLIP"
+    ],
+    [
+      11,
+      8,
+      0,
+      9,
+      3,
+      "CONDITIONING"
+    ],
+    [
+      14,
+      9,
+      0,
+      11,
+      0,
+      "UTX_VIEW_COLLECTION"
+    ],
+    [
+      15,
+      9,
+      2,
+      10,
+      0,
+      "IMAGE"
+    ],
+    [
+      21,
+      42,
+      0,
+      43,
+      0,
+      "IMAGE"
+    ],
+    [
+      23,
+      5,
+      0,
+      20,
+      1,
+      "MODEL"
+    ],
+    [
+      24,
+      6,
+      0,
+      20,
+      2,
+      "VAE"
+    ],
+    [
+      25,
+      8,
+      0,
+      20,
+      3,
+      "CONDITIONING"
+    ],
+    [
+      27,
+      20,
+      2,
+      21,
+      0,
+      "IMAGE"
+    ],
+    [
+      38,
+      44,
+      0,
+      45,
+      0,
+      "MESH"
+    ],
+    [
+      42,
+      45,
+      2,
+      40,
+      0,
+      "IMAGE"
+    ],
+    [
+      43,
+      45,
+      3,
+      41,
+      0,
+      "IMAGE"
+    ],
+    [
+      44,
+      45,
+      4,
+      42,
+      0,
+      "MASK"
+    ],
+    [
+      47,
+      45,
+      0,
+      20,
+      0,
+      "UTX_PREPARED_SOURCE_V23"
+    ],
+    [
+      48,
+      7,
+      0,
+      47,
+      0,
+      "CLIP"
+    ],
+    [
+      49,
+      47,
+      0,
+      20,
+      4,
+      "CONDITIONING"
+    ],
+    [
+      50,
+      47,
+      0,
+      9,
+      4,
+      "CONDITIONING"
+    ],
+    [
+      60,
+      9,
+      3,
+      49,
+      0,
+      "UTX_TEXTURE_SETUP"
+    ],
+    [
+      61,
+      20,
+      3,
+      49,
+      2,
+      "UTX_TEXTURE_SETUP"
+    ],
+    [
+      66,
+      5,
+      0,
+      9,
+      1,
+      "MODEL"
+    ],
+    [
+      67,
+      49,
+      2,
+      51,
+      0,
+      "IMAGE"
+    ],
+    [
+      75,
+      53,
+      0,
+      44,
+      0,
+      "MESH"
+    ],
+    [
+      81,
+      45,
+      0,
+      9,
+      0,
+      "UTX_PREPARED_SOURCE_V23"
+    ],
+    [
+      82,
+      3,
+      0,
+      61,
+      1,
+      "IMAGE"
+    ],
+    [
+      83,
+      62,
+      0,
+      61,
+      0,
+      "BACKGROUND_REMOVAL"
+    ],
+    [
+      84,
+      61,
+      0,
+      45,
+      2,
+      "MASK"
+    ],
+    [
+      85,
+      3,
+      0,
+      45,
+      1,
+      "IMAGE"
+    ],
+    [
+      101,
+      70,
+      0,
+      69,
+      5,
+      "UPSCALE_MODEL"
+    ],
+    [
+      123,
+      9,
+      0,
+      82,
+      0,
+      "UTX_VIEW_COLLECTION"
+    ],
+    [
+      124,
+      82,
+      0,
+      69,
+      1,
+      "UTX_VIEW_COLLECTION"
+    ],
+    [
+      125,
+      9,
+      3,
+      82,
+      1,
+      "UTX_TEXTURE_SETUP"
+    ],
+    [
+      126,
+      82,
+      1,
+      69,
+      0,
+      "UTX_TEXTURE_SETUP"
+    ],
+    [
+      128,
+      69,
+      0,
+      84,
+      0,
+      "UTX_VIEW_COLLECTION"
+    ],
+    [
+      129,
+      84,
+      0,
+      49,
+      1,
+      "UTX_VIEW_COLLECTION"
+    ],
+    [
+      130,
+      20,
+      0,
+      84,
+      1,
+      "UTX_VIEW_COLLECTION"
+    ],
+    [
+      131,
+      84,
+      1,
+      49,
+      3,
+      "UTX_VIEW_COLLECTION"
+    ],
+    [
+      132,
+      49,
+      0,
+      68,
+      0,
+      "MESH"
+    ],
+    [
+      133,
+      68,
+      0,
+      13,
+      0,
+      "MESH"
+    ]
+  ],
+  "groups": [],
+  "config": {},
+  "extra": {
+    "ds": {
+      "scale": 0.944207714111967,
+      "offset": [
+        -2316.7326083073176,
+        222.67661708390418
+      ]
+    },
+    "ultratex_modular": {
+      "version": "0.2.0",
+      "description": "03_FAST_1024V_TO_2048_ATLAS.json"
+    },
+    "frontendVersion": "1.53.10"
+  },
+  "version": 0.4
+}

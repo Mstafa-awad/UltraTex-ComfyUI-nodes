@@ -11,6 +11,7 @@ Patched build:
 from __future__ import annotations
 
 import copy
+import logging
 from dataclasses import dataclass, replace
 from pathlib import Path
 
@@ -561,7 +562,8 @@ class GenerateTextureViews(io.ComfyNode):
             [
                 SOURCE.Input("source"), io.Model.Input("model"), io.Vae.Input("vae"), io.Conditioning.Input("positive"),
                 io.Combo.Input("lora_name", options=folder_paths.get_filename_list("loras")),
-                io.Float.Input("lora_strength", default=1.0, min=0.0, max=2.0, step=0.05),
+                io.Float.Input("lora_strength", default=1.0, min=0.0, max=10.0, step=0.05,
+                    tooltip="UltraTex adapter strength (0–10). 2.0 is a useful comparison point; larger values are experimental and may distort detail."),
                 io.Combo.Input("decoder_name", options=decoder_names()),
                 io.Combo.Input("task", options=["albedo", "mr"], default="albedo"),
                 io.Int.Input("view_resolution", default=1024, min=256, max=4096, step=16,
@@ -577,22 +579,25 @@ class GenerateTextureViews(io.ComfyNode):
                     tooltip="Lower is lighter/faster; higher keeps more tokens in sparse attention."),
                 io.Combo.Input("extra_angle_mode", options=["guided", "independent"], default="guided",
                     tooltip="For 10 or 12 views, use the first pass to guide the 45-degree pass. 10 views omits redundant rotated top/bottom."),
-                io.Float.Input("extra_denoise", default=0.55, min=0.1, max=1.0, step=0.05,
-                    tooltip="How freely the guided 45-degree pass can change already observed details."),
-                io.Int.Input("extra_steps", default=16, min=1, max=100,
+                io.Float.Input("extra_denoise", display_name="45-degree denoise", default=1.0, min=0.1, max=1.0, step=0.05,
+                    tooltip="Denoise for the guided 45-degree pass. 1.0 runs the full noise schedule; observed guide tokens are held separately."),
+                io.Int.Input("extra_steps", default=4, min=1, max=100,
                     tooltip="Separate iteration budget for the 45-degree pass."),
                 io.Boolean.Input("tiled_decode", default=True,
                     tooltip="Tiled VAE for limited VRAM. Disable only if the VAE can decode without OOM."),
-                io.Float.Input("refine_denoise", default=0.0, min=0.0, max=0.9, step=0.05,
-                    tooltip="0 = off. Otherwise, after generation the views are baked once, re-rendered from that single texture and "
-                            "generated again at this denoise, so every view starts from the same paint. Costs a short extra pass; "
-                            "removes most view-to-view disagreement (albedo only)."),
-                io.Int.Input("refine_steps", default=4, min=1, max=100,
-                    tooltip="Step budget of the refine pass; only the steps below refine_denoise run (4 steps at 0.35 runs one sampler step, which measured as good as two)."),
-                io.Boolean.Input("fast_decode", default=False, optional=True,
+                # Retired in 2.3.9, kept so saved workflows keep their widget order: repainting every view from one shared
+                # 2048 texture removed most fine detail on all views except the front (back view detail 6.4 -> 1.7 at 0.35).
+                io.Float.Input("refine_denoise", default=0.0, min=0.0, max=0.9, step=0.05, advanced=True,
+                    tooltip="Retired, ignored: the refine pass washed out the detail of every view except the front."),
+                io.Int.Input("refine_steps", default=4, min=1, max=100, advanced=True,
+                    tooltip="Retired, ignored."),
+                io.Boolean.Input("fast_decode", default=True, optional=True,
                     tooltip="Decode each view once instead of averaging three tile layouts: about 3x faster VAE decode (~10 s less per 2048 view). "
                             "Measured: same sharpness and colour, no seams; fine texture-level differences only."),
                 io.Conditioning.Input("negative", optional=True),
+                io.Combo.Input("guide_atlas_resolution", options=["auto", "1024", "2048", "4096"], default="auto", optional=True, advanced=True,
+                    tooltip="Internal CPU atlas for the guided 45-degree pass. Auto preserves v2.2 sizing (1024–2048). "
+                            "4096 is an optional experiment; this control does not increase diffusion resolution or view count."),
             ],
             [VIEWS.Output(), io.Image.Output(display_name="all_views_512"), io.Image.Output(display_name="contact_sheet"),
              SETUP.Output(display_name="generation_setup_to_bake")],
@@ -635,13 +640,14 @@ class GenerateTextureViews(io.ComfyNode):
         denoise,
         sparse_retention,
         extra_angle_mode="guided",
-        extra_denoise=0.55,
-        extra_steps=16,
+        extra_denoise=1.0,
+        extra_steps=4,
         tiled_decode=True,
         refine_denoise=0.0,
         refine_steps=4,
-        fast_decode=False,
+        fast_decode=True,
         negative=None,
+        guide_atlas_resolution="auto",
     ):
         import folder_paths
         from .core.conditions import encode_conditions, build_tokens, build_workset
@@ -701,7 +707,9 @@ class GenerateTextureViews(io.ComfyNode):
             if guided:
                 from .core.bake import prepare_atlas, bake_map, repair_atlas
                 from .core.guidance import reproject_atlas
-                temp_size = min(2048, max(1024, first.plan.sample_size))
+                from .core.guidance import guide_atlas_size
+                temp_size = guide_atlas_size(first.plan.sample_size, guide_atlas_resolution)
+                logging.getLogger("UltraTex").info("[UTX] Guided bridge atlas: %d (views remain %d)", temp_size, first.plan.sample_size)
                 atlas, _ = _diag_stage("UTX2.second_pass.prepare_atlas", prepare_atlas, setup.context, first, temp_size, policy)
                 atlas_rgb, _, seen, conf, holes, _ = _diag_stage("UTX2.second_pass.bake_guide", bake_map,
                     atlas, collection.sets[0], "base_color", policy,
@@ -727,13 +735,12 @@ class GenerateTextureViews(io.ComfyNode):
                 patched, second_workset, policy, actual_steps, float(guidance), actual_denoise, "sparse", float(sparse_retention)
             )
             rotated, _ = _diag_stage("UTX2.second_pass.vae_decode", decode_views, decoder, second_samples, policy, bool(tiled_decode), bool(fast_decode))
-            collection = ViewCollection(collection.sets + rotated.sets)
+            collection = ViewCollection(collection.sets + tuple(replace(vs, guided=guided) for vs in rotated.sets))
             del second_conditions, second_pack, second_workset, second_samples, rotated
 
-        if float(refine_denoise) > 0 and task == "albedo":
-            collection = _refine_pass(setup, collection, patched, vae, decoder, positive, negative, policy, int(seed),
-                                      int(refine_steps), float(guidance), float(refine_denoise), float(sparse_retention),
-                                      bool(tiled_decode), bool(fast_decode))
+        if float(refine_denoise) > 0:
+            logging.getLogger("UltraTex").warning("[UTX] refine_denoise %.2f ignored: the refine pass is retired because it "
+                                                  "washed out the detail of the back and side views.", float(refine_denoise))
 
         batches = []
         labels = []
@@ -743,72 +750,6 @@ class GenerateTextureViews(io.ComfyNode):
             labels.extend(f"{'0' if i == 0 else '45'} deg - {views.plan.names[vi]}" for vi in active)
         images = _diag_stage("UTX2.output_prep", torch.cat, batches)
         return io.NodeOutput(collection, images, _diag_stage("UTX2.contact_sheet", contact_sheet, images, labels), setup)
-
-
-def _refine_pass(setup, collection, patched, vae, decoder, positive, negative, policy, seed, steps, guidance,
-                 denoise, retention, tiled, single_layout=False):
-    """Generate every view again from ONE texture so the cameras agree.
-
-    Independently generated views paint the same surface differently (measured 22-27 dB view-to-view PSNR, against ~41 dB
-    for a real texture; 33 dB after this pass). The first bake of all views is re-rendered into each calibrated rig,
-    encoded, partially noised and denoised again; the refined views then bake into the final atlas.
-    """
-    from .core import fastbake as fb
-    from .core.conditions import encode_conditions, build_tokens, build_workset
-    from .core.decode import decode_views
-    from .core.guidance import reproject_atlas
-    from .core.sampling import sample_workset
-    from .core.contracts import ViewCollection
-    from .core.refine import match_low_frequency
-    from .core.runtime import Store
-    import logging, time
-    from collections import Counter
-    seconds, mark = Counter(), [time.perf_counter()]
-
-    def lap(stage):
-        now = time.perf_counter()
-        seconds[stage] += now - mark[0]
-        mark[0] = now
-    # Guide bake at 2048; the baker frees VRAM from ComfyUI first and runs on CPU if there is no CUDA.
-    # The guide is a Quality bake (edge repair, exact filter support): measured on real views it leaves less rim
-    # speckle in the refined views than a Fast bake, and 12 % instead of 15 % of texels end up unobserved.
-    maps, _, _ = _diag_stage("UTX2.refine.bake_guide", fb.bake_surface_maps, setup, collection, 2048, True,
-                             device_preference="auto", anchor=True, anchor_fast=False, exact_support=True, edge_margin=8)
-    atlas = np.ascontiguousarray(maps["base_color"], dtype=np.float32)
-    full = np.ones(atlas.shape[:2], np.float32)
-    lap("guide")
-    refined = []
-    for i, gbuffer in enumerate(setup.gbuffers):
-        initial, _ = _diag_stage(f"UTX2.refine.reproject_{i}", reproject_atlas, setup.context, gbuffer, atlas, full, full, 0.0)
-        lap("reproject")
-        conditions, _ = _diag_stage(f"UTX2.refine.vae_encode_{i}", encode_conditions, vae, setup.reference, gbuffer, policy,
-                                    init_images=initial)
-        lap("encode")
-        pack, _ = _diag_stage(f"UTX2.refine.build_tokens_{i}", build_tokens, conditions, policy)
-        workset = _diag_stage(f"UTX2.refine.build_workset_{i}", build_workset, pack, positive, negative,
-                              (seed + 2 + i) % (2 ** 63), 1, "albedo", policy)
-        samples, _ = _diag_stage(f"UTX2.refine.sampling_{i}", sample_workset, patched, workset, policy, steps, guidance,
-                                 denoise, "sparse", retention)
-        lap("sampling")
-        views, _ = _diag_stage(f"UTX2.refine.vae_decode_{i}", decode_views, decoder, samples, policy, tiled, single_layout)
-        lap("decode")
-        store = Store(policy)
-        for vs in views.sets:
-            images = list(vs.images)
-            for vi in getattr(vs.plan, "active_indices", range(len(images))):
-                if i == 0 and vi == 0:
-                    # The anchor view carries the reference's own details (eyes, lashes, markings); the bake trusts it
-                    # as it is, and the other views are refined towards a guide that already contains it.
-                    images[vi] = collection.sets[0].images[0]
-                    continue
-                images[vi] = store.put(match_low_frequency(np.asarray(images[vi].read()), initial[vi],
-                                                           np.asarray(vs.masks[vi].read()) > 0.5))
-            refined.append(replace(vs, images=tuple(images)))
-        lap("colour anchor")
-        del initial, conditions, pack, workset, samples, views
-    logging.getLogger("UltraTex").info("[UTX refine] %.0f s (%s)", sum(seconds.values()),
-                                       ", ".join(f"{k} {v:.0f} s" for k, v in seconds.items()))
-    return ViewCollection(tuple(refined))
 
 
 def validate_bake_branch(setup, views, task):

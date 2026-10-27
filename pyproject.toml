@@ -1,6 +1,6 @@
 [project]
 name = "comfyui-ultratex-modular"
-version = "2.3.8rc1"
+version = "2.3.16rc1"
 description = "Modular foreground-only UltraTex generation, tiled UV baking, and native ComfyUI materials"
 readme = "README.md"
 requires-python = ">=3.11"

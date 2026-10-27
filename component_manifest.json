@@ -1,6 +1,6 @@
 {
   "package": "UltraTex Modular",
-  "version": "2.0.0",
+  "version": "2.3.16rc1",
   "measured_on": "2026-10-10",
   "python": "3.12.10",
   "dependencies": {
@@ -136,5 +136,16 @@
     ],
     "retired_public_bake_modes_migrated": true,
     "retired_vosr2_backend_removed": true
-  }
+  },
+  "original_component_snapshot_version": "2.0.0",
+  "release_date": "2026-10-25",
+  "repair_baseline": "UltraTex_v2_2_Optimized_10_Views_6Plus4_TEST.zip",
+  "repair_baseline_sha256": "c7198187d574cc248dce56e01964734e5b6f24b737216a52bd7691b8c326bf8a",
+  "material_grain": "independent NumPy/SciPy, explicit material mask, shared 3D detail field",
+  "source_priority": "front/back; remaining main rig; extras only fill missing or unreliable coverage",
+  "active_view_enhancement": "all active views; explicit processed/AI counts in node 2.5 report",
+  "uv_border_repair": "padding-only sparse bilinear constraints; occupied pixels fixed; sRGB albedo, linear scalar maps",
+  "export_normals": "same prepared normals as geometry projection",
+  "quality_upscaler": "official RealESRGAN_x4plus; separate BSD-3-Clause weight",
+  "model_hashes_rechecked": "2026-10-27"
 }

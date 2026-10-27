@@ -1,6 +1,6 @@
 """UltraTex Modular. Importing the package never loads models or GPU backends."""
 
-__version__ = "2.3.8rc1"
+__version__ = "2.3.16rc1"
 
 
 async def comfy_entrypoint():

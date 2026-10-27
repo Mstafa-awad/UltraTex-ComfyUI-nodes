@@ -1,5 +1,38 @@
 # Third-party code and host dependencies
 
+## UV-border and normal-preservation fixes (2.3.14rc1)
+
+`core/uv_seams.py` is an independent NumPy/SciPy implementation of sparse
+bilinear border constraints, with occupied texels fixed. No third-party seam
+solver code is copied. Research references: Liu, Ferguson, Jacobson and Gingold,
+Seamless (SIGGRAPH Asia 2017), https://cragl.cs.gmu.edu/seamless/ . The authors'
+reference implementation is MIT, but is not bundled or called:
+https://github.com/zfergus/seam-erasure/blob/master/LICENSE .
+
+The mesh-import scene traversal, inverse-transpose normal transform, and export
+normal-field consistency fixes are independently authored under GPL-3.0-only.
+No new runtime dependency is introduced. GPL permits commercial use subject to
+its terms; this does not replace any model or input-asset licence.
+
+The separately supplied quality upscaler is the official RealESRGAN_x4plus.pth
+v0.1.0 release, SHA-256
+4fa0d38905f75ac06eb49a7951b426670021be3018265fd191d2125df9d682f1.
+Publisher: https://github.com/xinntao/Real-ESRGAN/releases/tag/v0.1.0 .
+BSD-3-Clause notice is retained in vendor/licenses/REALESRGAN-BSD-3-Clause.txt.
+The installable code ZIP contains no model weights; the delivery folder's
+separate models/ directory contains this upscaler. No new diffusion weights.
+
+## Material grain restoration (2.3.12rc1)
+
+`core/material_grain.py` is an independently authored NumPy/SciPy implementation
+of example-patch quilting, minimum-error overlap joins, chart-restricted colour
+filtering and variance-normalized triplanar detail sampling. It retains this
+project's GPL-3.0-only terms. No Embark or other third-party synthesis source,
+binary, graph solver, checkpoint or network access is added. The example and
+material mask are supplied by the user; their asset rights remain separate.
+Commercial use of this code is permitted subject to GPL-3.0-only. Existing model
+licences, especially the FLUX9B non-commercial model terms, are unchanged.
+
 The rc4 CPU pool controller calls the separately installed `threadpoolctl`
 3.6 API, under the BSD-3-Clause license. Commercial use is permitted under that
 license; preserve upstream notices when redistributing the dependency.

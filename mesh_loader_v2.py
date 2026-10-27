@@ -104,26 +104,33 @@ def _mesh_data(scene, preserve_uv: bool, suffix: str):
     """Return mesh arrays, preserving all geometry instances and per-vertex seams."""
     import trimesh
     if isinstance(scene, trimesh.Trimesh):
-        parts = [scene]
+        parts = [(scene,np.eye(4))]
     elif isinstance(scene, trimesh.Scene):
-        # dump() applies node transforms and generates separate geometry instances;
-        # concatenate=False avoids dropping UVs for individual scene geometries.
-        parts = scene.dump(concatenate=False)
+        # Scene.dump() copies meshes without their authored normal cache in
+        # supported Trimesh versions. Preserve the source fields and transform
+        # each instance explicitly; normals need inverse-transpose for scale.
+        parts = [(scene.geometry[name],matrix) for node in scene.graph.nodes_geometry
+                 for matrix,name in [scene.graph[node]]]
     else:
         raise ValueError("The file does not contain a supported triangular surface mesh")
-    if isinstance(parts, trimesh.Trimesh):
-        parts = [parts]
     vertices, faces, uvs, normals = [], [], [], []
     uv_valid = bool(preserve_uv)
     offset = 0
     component_count = 0
-    for part in parts:
+    for part,transform in parts:
         if not isinstance(part, trimesh.Trimesh) or len(part.vertices) == 0 or len(part.faces) == 0:
             continue
         if not (np.asarray(part.faces).ndim == 2 and np.asarray(part.faces).shape[1] == 3):
             raise ValueError("Only triangular face meshes are supported")
         v = np.asarray(part.vertices, dtype=np.float32)
         f = np.asarray(part.faces, dtype=np.int64)
+        transform=np.asarray(transform,np.float64)
+        if transform.shape!=(4,4) or not np.isfinite(transform).all():
+            raise ValueError('Mesh instance transform is invalid')
+        try:normal_matrix=np.linalg.inv(transform[:3,:3])
+        except np.linalg.LinAlgError as exc:raise ValueError('Mesh instance transform is singular') from exc
+        v=np.asarray(trimesh.transform_points(v,transform),np.float32)
+        if np.linalg.det(transform[:3,:3])<0:f=f[:,::-1]
         if not (np.isfinite(v).all() and f.min() >= 0 and f.max() < len(v)):
             raise ValueError("Mesh has invalid/nonfinite vertices or face indices")
         vertices.append(v)
@@ -137,12 +144,15 @@ def _mesh_data(scene, preserve_uv: bool, suffix: str):
                 if uv.shape != (len(v), 2) or not np.isfinite(uv).all():
                     uv_valid = False
                 else:
-                    if suffix == ".obj":
-                        # OBJ's authored V-up coordinates need ComfyUI MESH/glTF V-down.
+                    if suffix in {".obj", ".glb", ".gltf"}:
+                        # Trimesh exposes image UVs as V-up, including GLB/glTF
+                        # imports. Native ComfyUI MESH and its exporter use V-down.
                         uv = uv.copy()
                         uv[:, 1] = 1.0 - uv[:, 1]
                     uvs.append(uv)
-        raw_normals = np.asarray(part.vertex_normals, dtype=np.float32)
+        raw_normals = np.asarray(part.vertex_normals, dtype=np.float64)@normal_matrix
+        raw_normals/=np.maximum(np.linalg.norm(raw_normals,axis=1,keepdims=True),1e-20)
+        raw_normals=np.asarray(raw_normals,np.float32)
         if raw_normals.shape != (len(v), 3) or not np.isfinite(raw_normals).all():
             raise ValueError("Mesh normals are invalid")
         normals.append(raw_normals)

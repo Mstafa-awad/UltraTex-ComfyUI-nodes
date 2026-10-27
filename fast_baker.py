@@ -1,4 +1,4 @@
-"""Two supported bake presets with migration of retired workflow values."""
+"""Original Fast/Quality main bake with coverage-only additional cameras."""
 from __future__ import annotations
 
 import json
@@ -13,10 +13,11 @@ from .simple import SETUP, VIEWS, schema, validate_bake_branch, validate_shared_
 log = logging.getLogger("UltraTex.FastBake")
 
 
-EDGE_REPAIR = "Quality + edge repair"
-UPSCALE_MODES = ("Fast", "Quality", EDGE_REPAIR)
-LEGACY_PRESETS = dict(fast_detail="Fast",off_direct="Fast",detail_consistent="Quality",sharp_source="Quality",
-                      sharp_coherent="Quality",sharp_anchor="Quality",sharp_anchor_v2="Quality",sharp_anchor_v3=EDGE_REPAIR,sharp_anchor_v4=EDGE_REPAIR)
+UPSCALE_MODES = ("Fast", "Quality")
+LEGACY_PRESETS = dict(fast_detail="Quality", off_direct="Fast", detail_consistent="Quality",
+    sharp_source="Quality", sharp_coherent="Quality", sharp_anchor="Quality",
+    sharp_anchor_v2="Quality", sharp_anchor_v3="Quality", sharp_anchor_v4="Quality",
+    **{"Sharp anchor": "Quality", "Quality + edge repair": "Quality"})
 
 def normalize_preset(value):
     if value in UPSCALE_MODES:return value
@@ -26,7 +27,9 @@ def normalize_preset(value):
 
 
 def run_fast_bake(albedo_setup, albedo_views, texture_size=2048, completion="surface_fill",
-                  upscale_mode="Quality", device="auto", mr_setup=None, mr_views=None):
+                  upscale_mode="Quality", device="auto", mr_setup=None, mr_views=None,
+                  grain_reference=None, material_mask=None, grain_density=4000., grain_strength=1., grain_seed=6,
+                  grain_color_strength=0.):
     from .core.contracts import MapInfo
     from .core.fastbake import bake_surface_maps
     from .core.materials import apply_materials, create_file
@@ -45,12 +48,28 @@ def run_fast_bake(albedo_setup, albedo_views, texture_size=2048, completion="sur
     if completion not in ("surface_fill", "off"):
         raise ValueError("completion must be surface_fill or off")
 
+    quality = upscale_mode == 'Quality'
     maps, coverage, report = bake_surface_maps(
         albedo_setup, albedo_views, target, completion == "surface_fill",
-        mr_setup, mr_views, device_preference=device,anchor=True,anchor_fast=upscale_mode=='Fast',
-        exact_support=upscale_mode!='Fast',edge_margin=8 if upscale_mode==EDGE_REPAIR else 0)
+        mr_setup, mr_views, device_preference=device, detail=quality, coverage_only=True)
+
+    # Legacy Python callers can still pass the retired material arguments, but
+    # no asset-specific repaint or broad UV colour-level operation is applied.
+    report['surface_repaint'] = dict(enabled=False, legacy_material_inputs_ignored=(
+        grain_reference is not None or material_mask is not None))
+
+    from .core.uv_seams import repair_padding,build_system
+    border_system=build_system(albedo_setup.context,target)
+    maps['base_color'], report['uv_borders'] = repair_padding(albedo_setup.context, maps['base_color'], system=border_system,inplace=True)
+    for name in ('roughness','metallic'):
+        if name in maps:
+            maps[name],border_report=repair_padding(albedo_setup.context,maps[name],system=border_system,inplace=True,color_space='linear')
+            report.setdefault('material_uv_borders',{})[name]=border_report
+    del border_system
 
     report["upscale_mode"] = upscale_mode
+    report["source_policy"] = "connected views; node 2.5 enhancement retained"
+    report["bake_algorithm"] = "v2.2 main-six fine-detail bake; extras fill holes only" if quality else "v2.2 main-six direct bake; extras fill holes only"
     if requested!=upscale_mode:report['migrated_preset']=dict(previous=requested,current=upscale_mode)
     report["output_size"] = target
     density = report.get("base_color", {}).get("harmonisation", {}).get("sampling_density")
@@ -63,7 +82,7 @@ def run_fast_bake(albedo_setup, albedo_views, texture_size=2048, completion="sur
              for name in maps}
     tensors = {name:torch.from_numpy(np.asarray(value,np.float32)[None]) for name,value in maps.items()}
     mesh, _ = apply_materials(context.mesh, uv_convention=getattr(context, "uv_convention", "v_down"),
-                              map_infos=infos, **tensors)
+                              map_infos=infos, prepared_normals=context.normals, **tensors)
     glb = create_file(mesh)
     material = getattr(mesh, "material", None) or {}
     if "roughness" in tensors:
@@ -102,11 +121,10 @@ class FastSurfaceTextureBaker(io.ComfyNode):
                 io.Combo.Input("texture_size", options=[1024, 2048, 4096, 8192], default=2048,
                                tooltip="Final texture size. Larger textures take more bake time and memory."),
                 io.Combo.Input("upscale_mode",display_name="bake_quality",options=list(UPSCALE_MODES),default="Quality",
-                               tooltip="Fast: quicker projection for previews. "
-                                       "Quality: exact texel support, keeps thin details (the 2.2 sharp_anchor_v2 bake plus the "
-                                       "2.3 camera fixes). Quality + edge repair: also rejects source pixels near geometric "
-                                       "edges and recolours them; removes some silhouette colour fringes but blurs thin parts "
-                                       "(hat bands, braids) and is slower. All complete unseen areas and preserve the mesh and UVs."),
+                               tooltip="The original six-view bake supplies the base; additional views fill remaining holes only. "
+                                       "Fast uses the original direct mode; Quality restores the original fine-detail mode. "
+                                       "Both retain node 2.5's enhanced images. Extra views cannot change covered main-rig pixels. "
+                                       "UV padding is repaired for albedo and material maps."),
                 io.Combo.Input("device", options=["auto", "cpu"], default="auto",advanced=True,
                                tooltip="auto: attempt the configured ComfyUI CUDA device after model offload. "
                                        "No predicted-memory refusal or automatic CPU rerun; actual allocation errors propagate. "
@@ -134,9 +152,11 @@ class FastSurfaceTextureBaker(io.ComfyNode):
 
     @classmethod
     def execute(cls, albedo_setup, albedo_views, texture_size, completion="surface_fill", upscale_mode="Quality",
-                device="auto", mr_setup=None, mr_views=None):
+                device="auto", mr_setup=None, mr_views=None, grain_reference=None, material_mask=None,
+                grain_density=4000., grain_strength=1., grain_seed=6,grain_color_strength=0.):
         return io.NodeOutput(*run_fast_bake(albedo_setup, albedo_views, int(texture_size), completion,
-                                            upscale_mode, device, mr_setup, mr_views))
+            upscale_mode, device, mr_setup, mr_views, grain_reference, material_mask,
+            grain_density, grain_strength, grain_seed,grain_color_strength))
 
 
 FAST_BAKER_NODES = [FastSurfaceTextureBaker]
