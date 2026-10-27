@@ -239,7 +239,7 @@ def _sample_job(model,job,steps,guidance,denoise,backend,topk,chunk,policy,contr
 
 
 @torch.inference_mode()
-def sample_workset(model,workset,policy,steps=25,guidance=4.,denoise=1.,backend="sparse",topk=.2,material_model=None):
+def sample_workset(model,workset,policy,steps=4,guidance=4.,denoise=1.,backend="sparse",topk=.2,material_model=None):
     import comfy.model_management as mm
     bindings={model_info(model).task:model}
     if material_model is not None:
@@ -318,9 +318,6 @@ def sample_workset(model,workset,policy,steps=25,guidance=4.,denoise=1.,backend=
                               loaded_size_mib=_safe_model_size_mib(binding),
                               residency=True)
                 if pending:
-                    if steps<10 and denoise==1:
-                        _LOG.warning("UltraTex: %d steps is a preview for the undistilled Klein base 9B. "
-                                     "Start with 25 steps for texture quality.",steps)
                     load_started=time.perf_counter()
                     if diag:
                         diag.mark("UTX2.sampling.model_load.begin",residency=True,manager_memory_required_bytes=int(memory))

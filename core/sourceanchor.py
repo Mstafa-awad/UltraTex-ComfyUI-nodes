@@ -24,6 +24,35 @@ AGREE_POWER = 1.5      # exponent of the corroborating share applied to the qual
 OBS_MIN_Q = 0.01       # observations weaker than this cannot affect any texel (relative weight q**64)
 
 
+def source_tiers(views):
+    """Main front/back, remaining main cameras, then additional cameras."""
+    tiers = []
+    for view in views:
+        rig, _, name = view.label.partition(':')
+        tiers.append(0 if rig == 'rig0' and name in ('front', 'back') else
+                     1 if rig == 'rig0' else 2)
+    return tiers
+
+
+def select_sources(colour, q, tiers, torch):
+    """One sharp source per texel; later cameras fill holes only.
+
+    Visibility/filter validity is already encoded in q. Once an earlier tier
+    supplies a usable observation, a later tier cannot replace it merely by
+    having a better angle. This also protects weak but valid main observations.
+    """
+    tier = torch.tensor(tiers, device=q.device)[:, None]
+    missing = len(tiers) + 3
+    chosen_tier = torch.where(q >= fb.Q_LO, tier, missing).amin(0)
+    allowed = torch.where((tier == chosen_tier) & (q >= fb.Q_LO), q, 0.)
+    quality, owner = allowed.max(0)
+    index = torch.arange(q.shape[1], device=q.device)
+    result = colour[owner, index]
+    owner = torch.where(quality >= fb.Q_LO, owner, -1)
+    result = torch.where((owner >= 0)[:, None], result, 0.)
+    return result, quality, owner, allowed
+
+
 def _clock(device, torch):
     """Wall clock after the queued GPU work finished, so stage times are not attributed to the next sync."""
     import time
@@ -41,7 +70,7 @@ def anchor_weight(q, fallback_q, torch, handover_q=None):
     the front view may hand a texel to (default: all of them)."""
     t = ((q - 0.12) / 0.18).clamp(0, 1)
     a = t * t * (3 - 2 * t)
-    if os.environ.get('UTX_ANCHOR_HANDOVER', '1') != '0':
+    if os.environ.get('UTX_ANCHOR_HANDOVER', '0') != '0':
         # The front view seeing a surface at a steep angle (chest beside a braid, the face of a tilted button) spreads a
         # few pixels over a large area, while a 45-degree camera may see it squarely. Measured on a wizard mesh: front
         # quality 0.33-0.56 against 0.93-0.99 for the 45-degree front camera on 6 % of the texels the front view owned.
@@ -55,6 +84,39 @@ def handover_views(views):
     """Cameras that may take a texel from the front view: not the 0-degree top/bottom ones, whose FLUX views are the
     weakest (the bottom view is mostly near-black); they still fill what no other camera sees."""
     return [vi for vi in range(1, len(views)) if not views[vi].label.endswith((":top", ":bottom"))]
+
+
+HELD_FROM = 0.35   # first-rig quality where the guided pass starts holding a 45-degree pixel (guidance.reproject_atlas)
+
+
+def guided_split(views, collection):
+    """Indices for opt-in novelty weighting; normal bridge fusion returns ([], [])."""
+    guided_sets = {si for si, vs in enumerate(collection.sets) if getattr(vs, "guided", False)}
+    # The guided views bridge the different micro-textures painted by the main
+    # rig. Suppressing their held regions (2.3.9) exposes a patchwork of sharp
+    # but incompatible grain. Keep the proven bridge fusion by default; retain
+    # novelty-only fusion as an explicit diagnostic experiment.
+    if not guided_sets or os.environ.get('UTX_GUIDED_NOVELTY', '0') == '0':
+        return [], []
+    rig = [int(v.label.split(":")[0][3:]) for v in views]
+    return [i for i, r in enumerate(rig) if r not in guided_sets], [i for i, r in enumerate(rig) if r in guided_sets]
+
+
+def novel_quality(q, first, guided, torch):
+    """Quality of the guided views counted only where they carry new information.
+
+    Where the first rig saw a texel well, the guided 45-degree pass held its pixel to a re-render of the first-pass
+    texture (a 2048 atlas, then a VAE round trip): a blurred copy of the first rig. With the plain quality those copies
+    beat the sharp 0-degree pixels on every surface facing a 45-degree camera (back, sides), because the fusion is
+    winner-take-most on viewing angle. Scaling them by (1 - hold strength) keeps them where they painted something new
+    (under the beard, inside the sleeves) and lets the original views paint the rest.
+    """
+    if not guided or not first:
+        return q
+    held = ((q[first].amax(0) - HELD_FROM) / (1 - HELD_FROM)).clamp(0, 1)
+    out = q.clone()
+    out[guided] *= 1 - held
+    return out
 
 
 def agreement_quality(colour, q, torch):
@@ -123,12 +185,13 @@ class _Observations:
         return c, q
 
 
-def bake(surface, collection, device, completion=True, timer=None, exact_support=False,edge_margin=0,fast=False):
+def bake(surface, collection, device, completion=True, timer=None, exact_support=False,edge_margin=0,fast=False,source_priority=False):
     from .sharpbake import attach_source_base, proxy_view
     from .enhance import restore_original
     torch = fb._torch()
     timer = timer or fb.StageTimer()
     views = fb.collect_views(collection)
+    tiers = source_tiers(views)
     geo = fb.texel_geometry(surface, device, analytic_footprint=True)
     n = len(surface.raster.texel)
     full = torch.zeros((n, 3), device=device)
@@ -136,12 +199,15 @@ def bake(surface, collection, device, completion=True, timer=None, exact_support
     best = torch.zeros(n, device=device)     # strongest real quality of any fallback observation
     best_w = torch.zeros(n, device=device)   # same after the agreement scaling (reference of the weights)
     counts = torch.zeros(n, dtype=torch.int16, device=device)
-    consensus = os.environ.get('UTX_CONSENSUS', '1') != '0'
+    # Restore the working source ownership as one policy: a stable front anchor
+    # plus ordinary guided candidates, without colour voting changing the owner.
+    consensus = not source_priority and os.environ.get('UTX_CONSENSUS', '0') != '0'
     diagnostics = AnchorDiagnostics(n, len(views), device, torch)
     timer.lap('base_color:anchor_geometry')
     originals = fb.collect_views(restore_original(collection))
     originals = [proxy_view(v) if v.image_ref.shape[0] > 2048 else v for v in originals]
-    gains, gain_report = fb.estimate_gains(geo, originals, device, complete_mips=True)
+    gains, gain_report = fb.estimate_gains(geo, originals, device, complete_mips=True,
+                                         source_tiers=tiers if source_priority else None)
     # Keep the anchor exposure exact; harmonize only fallback cameras.
     gains = np.clip(gains / np.maximum(gains[0], 1e-08), 1 / 1.15, 1.15)
     gains[0] = 1
@@ -149,10 +215,32 @@ def bake(surface, collection, device, completion=True, timer=None, exact_support
     per = []
     chunk = 1 << 18
     observations = _Observations(len(views), device, torch)
+    secondary_tier = (torch.full((n,), len(views)+3, dtype=torch.int16, device=device)
+                      if source_priority and geo.extra_pos is not None else None)
 
-    def add_extra(c, q, positions):
+    def add_extra(c, q, positions, vi):
         """Secondary (overlapping-UV) claims: fused into their texel with the raw quality."""
         unique = torch.unique(positions)
+        if source_priority:
+            # An overlapping UV claim may fill a hole; never let it repaint an
+            # observed primary surface. Keep one sample even for repeated IDs.
+            unique, inverse = torch.unique(positions, return_inverse=True)
+            maximum = torch.zeros(len(unique), device=device)
+            maximum.scatter_reduce_(0, inverse, q, reduce='amax', include_self=True)
+            earlier = tiers[vi] < secondary_tier[positions]
+            same = tiers[vi] == secondary_tier[positions]
+            candidate = ((q == maximum[inverse]) & (q >= fb.Q_LO)
+                         & (earlier | (same & (q > best[positions]))))
+            order = torch.arange(len(q), device=device)
+            picked = torch.full((len(unique),), len(q), dtype=torch.int64, device=device)
+            picked.scatter_reduce_(0, inverse, torch.where(candidate, order, len(q)), reduce='amin', include_self=True)
+            valid = picked < len(q)
+            target = unique[valid]
+            full[target] = c[picked[valid]]
+            weight[target] = 1
+            best[target] = maximum[valid]
+            secondary_tier[target] = tiers[vi]
+            return
         old = best_w[unique].clone()
         best_w.scatter_reduce_(0, positions, q, reduce='amax', include_self=True)
         best.scatter_reduce_(0, positions, q, reduce='amax', include_self=True)
@@ -198,7 +286,7 @@ def bake(surface, collection, device, completion=True, timer=None, exact_support
         for s in range(n, len(geo.P), chunk):
             e = min(len(geo.P), s + chunk)
             c, q, _ = fb._project(geo.slice(s, e), pv, torch, source_detail=True)
-            add_extra(c * gain, q, geo.extra_pos[s - n:e - n])
+            add_extra(c * gain, q, geo.extra_pos[s - n:e - n], vi)
         for s in range(0, n, chunk):
             e = min(n, s + chunk)
             c, q, _ = fb._project(geo.slice(s, e), pv, torch, source_detail=True)
@@ -208,17 +296,44 @@ def bake(surface, collection, device, completion=True, timer=None, exact_support
             used += int((q >= fb.Q_LO).sum())
         observations.seal(vi)
         t_done = _clock(device, torch)
-        per.append(dict(view=pv.label, prepare_seconds=round(t_prepared - t_start, 3), projection_seconds=round(t_done - t_prepared, 3),
+        per.append(dict(view=pv.label, image_px=pv.S, depth_px=pv.R, enhanced=views[vi].transform is not None,
+                        prepare_seconds=round(t_prepared - t_start, 3), projection_seconds=round(t_done - t_prepared, 3),
                         texels_used=used, fully_anchored_texels=0, guard_candidates=getattr(pv, 'guard_candidates', 0), guard_rejected=getattr(pv, 'guard_rejected', 0),source_edge_excluded_pixels=pv.source_edge_excluded_pixels,source_confirmation=pv.source_confirmation,source_colour_guard_pixels=pv.source_colour_guard_pixels,source_colour_consensus=pv.source_colour_consensus))
         del pv
     timer.lap('base_color:anchor_projection')
     anchored = reweighted = 0
     eligible = handover_views(views)
+    first, guided = guided_split(views, collection)
+    supplied = torch.zeros(len(views), dtype=torch.int64, device=device)
+    protected_main = extra_overwrites = 0
+    extra_indices = torch.unique(geo.extra_pos) if source_priority and geo.extra_pos is not None else None
+    if extra_indices is not None:
+        extra_colour, extra_quality = full[extra_indices].clone(), best[extra_indices].clone()
     for s in range(0, n, chunk):
         fb._interrupt()
         e = min(n, s + chunk)
         c, q = observations.dense(s, e)
-        q_weight = agreement_quality(c, q, torch) if consensus else q
+        if source_priority:
+            chosen, quality, owner, allowed = select_sources(c, q, tiers, torch)
+            main = [i for i, tier in enumerate(tiers) if tier < 2]
+            main_seen = (q[main] >= fb.Q_LO).any(0)
+            protected_main += int(main_seen.sum())
+            extra_owner = torch.zeros_like(main_seen)
+            for vi, tier in enumerate(tiers):
+                if tier == 2: extra_owner |= owner == vi
+            extra_overwrites += int((main_seen & extra_owner).sum())
+            full[s:e] = chosen
+            best[s:e] = quality
+            supplied += torch.bincount(owner[owner >= 0], minlength=len(views))
+            for vi in range(len(views)):
+                diagnostics.fallback_winner(vi, s, e, owner == vi)
+            a = (owner == 0).float()
+            diagnostics.anchor_step(s, e, a, q[0], q[1:].amax(0) if len(views)>1 else torch.zeros_like(q[0]), quality)
+            diagnostics.probe_texels(s, e, geo.P[s:e], c, q, allowed, a, chosen)
+            anchored += int((owner == 0).sum())
+            continue
+        qn = novel_quality(q, first, guided, torch)
+        q_weight = agreement_quality(c, qn, torch) if consensus else qn
         for vi in range(1, len(views)):
             add_fallback(vi, c[vi], q[vi], q_weight[vi], s, e)
         full[s:e] /= weight[s:e].clamp_min(1e-20)[:, None]
@@ -233,6 +348,15 @@ def bake(surface, collection, device, completion=True, timer=None, exact_support
         if consensus:
             reweighted += int(((q_weight[1:] < 0.9 * q[1:]) & (q[1:] >= fb.Q_LO)).any(0).sum())
     per[-1]['fully_anchored_texels'] = anchored
+    if extra_indices is not None:
+        missing = (best[extra_indices] < fb.Q_LO) & (extra_quality >= fb.Q_LO)
+        full[extra_indices[missing]] = extra_colour[missing]
+        best[extra_indices[missing]] = extra_quality[missing]
+    if source_priority:
+        supplied_counts = supplied.cpu().tolist()
+        for row in per:
+            vi = next(i for i, v in enumerate(views) if v.label == row['view'])
+            row.update(source_tier=tiers[vi], texels_supplied=supplied_counts[vi])
     del observations
     colour = np.nan_to_num(full.cpu().numpy(), nan=0, posinf=1, neginf=0)
     q = best.cpu().numpy()
@@ -240,13 +364,35 @@ def bake(surface, collection, device, completion=True, timer=None, exact_support
     diagnostics.save(q, counts, surface.raster.texel)
     del geo, full, weight, best, best_w
     timer.lap('base_color:anchor_fusion')
-    alpha = fb._smoothstep(q, fb.Q_LO, fb.Q_HI)
+    # Completion must fill holes, not blend a low-frequency vertex field into
+    # valid, steep-angle observations. Keep every selected source pixel intact.
+    alpha = ((q >= fb.Q_LO).astype(np.float32) if source_priority else
+             fb._smoothstep(q, fb.Q_LO, fb.Q_HI))
     area = surface.texel_area.astype(np.float64)
     stats = dict(texels=n, observed_strong_fraction=float((alpha >= 1 - 1e-06).mean()), observed_any_fraction=float((q >= fb.Q_LO).mean()), unobserved_fraction=float((q < fb.Q_LO).mean()), observed_area_fraction=float((area * alpha).sum() / max(area.sum(), 1e-30)), mean_views_per_observed_texel=float(counts[q >= fb.Q_LO].mean()) if (q >= fb.Q_LO).any() else 0, fusion=dict(mode='sharp_anchor_v2' if exact_support else 'sharp_anchor', anchor_view=views[0].label, anchor_full_quality=0.3, anchor_transition_start=0.12, anchor_colour_unchanged=True, source_images_warped=False, filter_support='exact mip/cubic texel bounds' if exact_support else 'rc3 radius estimate'), views=per, view_gains_rgb=gains.tolist(), harmonisation=gain_report)
     stats['fusion']['fallback_agreement'] = dict(enabled=consensus, colour_full=AGREE_FULL, colour_none=AGREE_NONE,
                                                  power=AGREE_POWER, texels_reweighted=reweighted)
+    stats['fusion']['guided_views_new_only'] = dict(enabled=bool(guided), views=[views[i].label for i in guided], held_from=HELD_FROM)
+    has_guided = any(getattr(vs, 'guided', False) for vs in collection.sets)
+    stats['fusion']['guided_bridge_policy'] = ('novelty_only' if guided else 'consistent_with_main_rig') if has_guided else 'no_guided_rig'
+    stats['fusion']['front_camera_policy'] = 'quality_handover' if os.environ.get('UTX_ANCHOR_HANDOVER', '0') != '0' else 'legacy_anchor'
+    if source_priority:
+        for obsolete in ('anchor_full_quality', 'anchor_transition_start', 'fallback_agreement'):
+            stats['fusion'].pop(obsolete, None)
+        stats['fusion'].update(mode='coverage_priority',
+            source_order=['main front/back', 'remaining main cameras', 'additional cameras'],
+            minimum_quality=fb.Q_LO, angle_based_handover=False,
+            one_source_per_texel=True, cross_view_rgb_averaging=False,
+            additional_views='fill missing main-rig coverage only',
+            main_covered_texels=protected_main,
+            additional_overwrite_main_texels=extra_overwrites,
+            weak_observed_texels_preserved=int(((q >= fb.Q_LO) & (q < fb.Q_HI)).sum()),
+            completion_scope='unobserved texels only',
+            front_camera_policy='main front/back first; unchanged source detail',
+            guided_bridge_policy='missing_coverage_only',
+            guided_views_new_only=dict(enabled=True, views=[v.label for i,v in enumerate(views) if tiers[i]==2]))
     stats['fusion']['source_edge_margin_original_pixels']=edge_margin
-    if fast:stats['fusion'].update(mode='Fast',surface_reconstruction='direct masked source filtering')
+    if fast:stats['fusion'].update(surface_reconstruction='direct masked source filtering')
     if edge_margin>0:
         stats['fusion'].update(mode='sharp_anchor_v3',edge_repair='isolated chromatic source outliers near geometry edges',
                                geometric_grazing_quality=True,source_images_warped=False,anchor_sampling_unchanged=True,

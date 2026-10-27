@@ -29,7 +29,7 @@ def resize_scalar(image,height,width):
 
 
 def apply_materials(mesh,normal_convention="OpenGL",alpha_mode="inherit",alpha_cutoff=.5,
-                    uv_convention="v_down",map_infos=None,**maps):
+                    uv_convention="v_down",map_infos=None,prepared_normals=None,**maps):
     v,faces,uv,source_normals=mesh_arrays(mesh)
     connected={name:image_tensor(value,name) for name,value in maps.items() if value is not None}
     if connected and uv is None:
@@ -45,6 +45,11 @@ def apply_materials(mesh,normal_convention="OpenGL",alpha_mode="inherit",alpha_c
                 raise ValueError(f"{name} socket received metadata tagged {info.semantic}")
     result=copy.copy(mesh)
     from .geometry import compute_normals
+    if prepared_normals is not None:
+        prepared_normals=np.asarray(prepared_normals,np.float32)
+        if prepared_normals.shape!=v.shape or not np.isfinite(prepared_normals).all() or (np.linalg.norm(prepared_normals,axis=1)<1e-10).any():
+            raise ValueError('Prepared normal field must contain one finite nonzero normal per vertex')
+        source_normals=prepared_normals
     result.normals=torch.zeros_like(mesh.vertices,dtype=torch.float32,device="cpu")
     result.normals[0,:len(v)]=torch.from_numpy(compute_normals(v,faces,source_normals))
     if uv_convention=="v_up":

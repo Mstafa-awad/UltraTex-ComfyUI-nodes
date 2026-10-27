@@ -224,6 +224,9 @@ class ViewSet:
     sampling: tuple[ImageTransform, ...] = ()
     original_images: tuple[ArrayRef, ...] = ()
     original_masks: tuple[ArrayRef, ...] = ()
+    # True for the guided 45-degree rig: where the first rig saw the surface well, these views were held to a
+    # re-render of the first-pass texture, so there they are copies of the first rig, not new observations.
+    guided: bool = False
 
 
 @dataclass(frozen=True)

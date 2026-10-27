@@ -110,6 +110,7 @@ def enhance_views(setup, collection, enabled=False, crop=True, padding=3., squar
         raise ValueError("UTX 2.5 enhances Base Color RGB only. Connect MR directly to UTX3.")
     collection = restore_original(collection)  # repeated enhancement always starts at the source
     active_count = sum(len(v.plan.active_indices) for v in collection.sets)
+    report['active_views'] = active_count
     supplied = None
     if foreground_masks is not None:
         supplied = foreground_masks.detach().float().cpu().numpy() if hasattr(foreground_masks,"detach") else np.asarray(foreground_masks)
@@ -212,6 +213,8 @@ def enhance_views(setup, collection, enabled=False, crop=True, padding=3., squar
             transforms.append(tr)
             entry=dict(details)
             entry.update(rig=len(sets),view=vi,transform=asdict(tr),
+                label=vs.plan.names[vi],source_size=[w,h],
+                output_size=[tr.output_size,tr.output_size],
                 foreground_fraction=float(original_mask.mean()),crop_fraction=box[2]*box[3]/(w*h),
                 seconds=time.perf_counter()-t,segmentation_seconds=seg_seconds)
             report["views"].append(entry)
@@ -219,6 +222,8 @@ def enhance_views(setup, collection, enabled=False, crop=True, padding=3., squar
         sets.append(replace(vs,images=tuple(images),masks=tuple(masks),sampling=tuple(transforms),
                             original_images=vs.images,original_masks=vs.masks))
     report.update(seconds=time.perf_counter()-start,upscaler=upscaler,mask_mode=mask_mode,
+                  processed_views=len(report['views']),
+                  ai_upscaled_views=sum(bool(v.get('ai')) for v in report['views']),
                   segmentation_inference=("supplied MASK" if supplied is not None else "native ComfyUI BiRefNet" if mask_mode in ("BiRefNet mask","hybrid mask") else "none; geometry reused"),
                   ai_detail="generated estimate, not recovered ground truth" if upscaler!="None" else "none")
     return ViewCollection(tuple(sets)),report

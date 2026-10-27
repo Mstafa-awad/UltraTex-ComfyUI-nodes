@@ -1076,7 +1076,8 @@ def _smoothstep(x, lo, hi):
 
 
 def _as_prepared(view, semantic, device, complete_mips=False):
-    return view if isinstance(view, PreparedView) else prepare_view(view, semantic, device, complete_mips=complete_mips)
+    return view if isinstance(view, PreparedView) else prepare_view(view, semantic, device,
+        complete_mips=complete_mips, stream=(view.transform is not None))
 
 
 def _view_bytes(view, semantic):
@@ -1110,7 +1111,7 @@ def _density_report(Q, FP):
                     if med < 0.95 else "the atlas does not exceed the views' sampling density"}
 
 
-def estimate_gains(geo, views, device, max_samples=200_000, complete_mips=False):
+def estimate_gains(geo, views, device, max_samples=200_000, complete_mips=False, source_tiers=None):
     """Robust per-view, per-channel multiplicative colour gains (log-domain least squares).
     Also returns the atlas/view sampling-density statistics of the subsample."""
     torch = _torch()
@@ -1133,6 +1134,11 @@ def estimate_gains(geo, views, device, max_samples=200_000, complete_mips=False)
     C = np.stack(cols)  # (V,n,3)
     Q = np.stack(qs)    # (V,n)
     density = _density_report(Q, np.stack(fps))
+    if source_tiers is not None:
+        from .coverage_colour import fit_gains
+        g, report = fit_gains(C, Q, source_tiers)
+        report.update(samples=int(idx.numel()), sampling_density=density)
+        return g, report
     if density:
         density["footprint_method"] = ("world/UV differential area" if complete_mips else
             "legacy triangle area/claim-count heuristic; can understate footprint on dense meshes")
@@ -1602,13 +1608,13 @@ def _estimate_bytes(n_texels, max_depth_px, max_image_px, chunk=1 << 20, detail=
 
 
 def bake_branch(surface, collection, semantic, device, completion=True, harmonize=True, timer=None,
-                detail=False, consistent=False, source_sharp=False, patch_guide=None, anchor=False, exact_support=False,edge_margin=0,anchor_fast=False):
+                detail=False, consistent=False, source_sharp=False, patch_guide=None, anchor=False, exact_support=False,edge_margin=0,anchor_fast=False,source_priority=False,binary_coverage=False):
     """Bake one semantic ('base_color' or 'mr') from a view collection on a shared surface.
     detail=True (Base Color only) uses cubic reconstruction + a near single-camera fine band;
     visibility, confidence, coverage and completion are identical to the standard path."""
     if anchor and semantic == 'base_color':
         from .sourceanchor import bake
-        return bake(surface,collection,device,completion,timer,exact_support=exact_support,edge_margin=edge_margin,fast=anchor_fast)
+        return bake(surface,collection,device,completion,timer,exact_support=exact_support,edge_margin=edge_margin,fast=anchor_fast,source_priority=source_priority)
     if patch_guide is not None and semantic == 'base_color':
         from .patchbake import bake
         return bake(surface,collection,device,patch_guide,completion,timer)
@@ -1633,7 +1639,13 @@ def bake_branch(surface, collection, semantic, device, completion=True, harmoniz
     gains = None
     gain_report = {}
     if semantic == "base_color" and harmonize and len(views) > 1:
-        gains, gain_report = estimate_gains(geo, views, device, complete_mips=consistent)
+        matching = views
+        if any(vs.sampling for vs in collection.sets):
+            from .enhance import restore_original
+            matching = collect_views(restore_original(collection))
+        gains, gain_report = estimate_gains(geo, matching, device, complete_mips=consistent)
+        if matching is not views:
+            gain_report['gain_images'] = 'preserved original views; enhanced RGB retained for baking'
         timer.lap(f"{semantic}:view_harmonisation")
     fused = fuse_views(surface, geo, views, semantic, device, gains, detail=detail, consistent=consistent)
     sharp, broad, qmax, nviews, per_view, p_sharp = fused[:6]
@@ -1698,11 +1710,11 @@ def bake_branch(surface, collection, semantic, device, completion=True, harmoniz
     if semantic == "base_color":
         values = linear_to_srgb_np(values)
     values = np.clip(values, 0.0, 1.0)
-    return values, alpha, stats
+    return values, seen.astype(np.float32) if binary_coverage else alpha, stats
 
 
 def bake_surface_maps(albedo_setup, albedo_views, size, completion=True, mr_setup=None, mr_views=None,
-                      device_preference="auto", harmonize=True, detail=False, consistent=False, source_sharp=False, coherent=False, anchor=False, exact_support=False,edge_margin=0,anchor_fast=False):
+                      device_preference="auto", harmonize=True, detail=False, consistent=False, source_sharp=False, coherent=False, anchor=False, exact_support=False,edge_margin=0,anchor_fast=False,source_priority=False,coverage_only=False):
     """Bake Base Color (+ Roughness/Metallic) atlases. Returns (maps, coverage, report).
     detail=True applies the detail-preserving reconstruction/fusion to Base Color only;
     Roughness/Metallic always use the standard path (scalar material data)."""
@@ -1711,7 +1723,7 @@ def bake_surface_maps(albedo_setup, albedo_views, size, completion=True, mr_setu
     cpu_report = configure_cpu()
     timer = StageTimer()
     context = albedo_setup.context
-    if source_sharp or coherent or anchor:
+    if source_sharp or coherent or anchor or coverage_only:
         # An 8K atlas and an older cached dense-mesh raster should not coexist
         # just to retain a warm cache on a 16GB machine. Keep the requested
         # surface if it already exists; MR reuses it in this same call.
@@ -1763,14 +1775,21 @@ def bake_surface_maps(albedo_setup, albedo_views, size, completion=True, mr_setu
     def run(dev):
         maps = {}
         with torch.inference_mode():
-            base, alpha, stats = bake_branch(surface, albedo_views, "base_color", dev, completion, harmonize, timer,
-                                             detail=detail, consistent=consistent, source_sharp=source_sharp,patch_guide=patch_guide,anchor=anchor,exact_support=exact_support,edge_margin=edge_margin,anchor_fast=anchor_fast)
+            if coverage_only:
+                from .coveragebake import bake as coverage_bake
+                base, alpha, stats = coverage_bake(surface,albedo_views,dev,completion,timer,detail=detail)
+            else:
+                base, alpha, stats = bake_branch(surface, albedo_views, "base_color", dev, completion, harmonize, timer,
+                                                 detail=detail, consistent=consistent, source_sharp=source_sharp,patch_guide=patch_guide,anchor=anchor,exact_support=exact_support,edge_margin=edge_margin,anchor_fast=anchor_fast,source_priority=source_priority)
             report["base_color"] = stats
             maps["base_color"] = to_atlas(surface, base, fill_gutter=True)
             coverage = coverage_atlas(surface, alpha)
             timer.lap("base_color:atlas_and_gutter")
             if mr_views is not None:
-                mr, _, mr_stats = bake_branch(surface, mr_views, "mr", dev, completion, False, timer)
+                if coverage_only:
+                    mr, _, mr_stats = coverage_bake(surface,mr_views,dev,completion,timer,semantic='mr')
+                else:
+                    mr, _, mr_stats = bake_branch(surface, mr_views, "mr", dev, completion, False, timer)
                 report["mr"] = mr_stats
                 atlas = to_atlas(surface, mr, fill_gutter=True)
                 maps["roughness"] = np.repeat(atlas[..., 0:1], 3, axis=2)

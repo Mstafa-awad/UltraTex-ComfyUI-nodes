@@ -13,6 +13,15 @@ from .render import Renderer
 from .runtime import interrupt
 
 
+def guide_atlas_size(view_size, requested="auto"):
+    """Preserve the proven v2.2 guide size; larger internal guides remain opt-in."""
+    if requested == "auto":
+        return min(2048, max(1024, int(view_size)))
+    if str(requested) not in ("1024", "2048", "4096"):
+        raise ValueError("guide_atlas_resolution must be auto, 1024, 2048 or 4096")
+    return int(requested)
+
+
 def reproject_atlas(mesh_context, gbuffer, atlas_rgb, observed, confidence,
                     min_confidence=0.35):
     size = int(gbuffer.plan.sample_size)
